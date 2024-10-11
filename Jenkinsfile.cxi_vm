@@ -1,0 +1,8 @@
+@Library(['CrayNetworkCI@master']) _
+
+def map = [:]
+map.prScript = "cassini-vm/cxi_vm_pr.sh"
+map.commitScript = "cassini-vm/cxi_vm_commit.sh"
+map.primaryBranch = "main"
+map.repoName = "kdreg2"
+cxiVmPipeline (map)

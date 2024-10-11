@@ -1,0 +1,84 @@
+// Copyright (C) 2023. Hewlett Packard Enterprise Development LP 
+
+pipeline {
+    options {
+        // We skip the default checkout from git so that we can
+        // wrap it in a retry() block to improve reliability.
+        skipDefaultCheckout(true)
+
+        // Generic build options
+        buildDiscarder(logRotator(numToKeepStr: '15'))
+
+        // We need a timeout so that jobs don't hang forever, but
+        // long enough so that adding stages doesn't put us over.
+        timeout(time: 15, unit: 'MINUTES')
+
+        // Build options
+        disableConcurrentBuilds()
+        timestamps()
+        skipStagesAfterUnstable()
+        parallelsAlwaysFailFast()
+    }
+    agent {
+        node {
+            label 'wham'
+        }
+    }
+    stages {
+        stage('Clean Workspace') {
+            steps {
+                retry(3) {        // file system on wham is flakey,
+                    cleanWs()     // try multiple times
+                }
+            }
+        }
+        stage('Clone Kdreg2 Repo') {
+            steps {
+                retry(3) {        // connection to repo is somewhat flakey,
+                    checkout scm  // try multiple times
+                }
+            }
+        }
+	stage('Build Module') {
+            steps {
+                sh "make modules"
+            }
+        }
+	stage('Build Tests') {
+            steps {
+                dir('tests') {
+                    sh "make all"
+                }
+            }
+        }
+        stage('Install Module') {
+            steps {
+                sh "id -a"
+                sh "sudo rmmod kdreg2 || true"
+                sh "sudo insmod kdreg2.ko"
+            }
+        }
+	stage('Run Tests') {
+            steps {
+                dir('tests') {
+                    sh "make run_tests"
+                }
+            }
+        }
+    }
+    post {
+        always {
+            publish_results()
+        }
+        cleanup {
+            sh "sudo rmmod kdreg2 || true"
+        }
+    }
+}
+
+def publish_results() {
+    step([$class: 'TapPublisher',
+          testResults: "tests/unit_tests.tap",
+	  verbose: true,
+	  failedTestsMarkBuildAsFailure: true])
+}

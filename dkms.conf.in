@@ -1,0 +1,49 @@
+#
+# Copyright 2023 Hewlett Packard Enterprise Development LP
+#
+
+## Global options
+PACKAGE_NAME="@PACKAGE_NAME@"
+# Package version should change with each new version
+PACKAGE_VERSION="@PACKAGE_VERSION@"
+
+## SHS DKMS variables
+SHS_DKMS_PACKAGEROOT="${dkms_tree}/${PACKAGE_NAME}/${PACKAGE_VERSION}"
+SHS_DKMS_BUILDROOT="${SHS_DKMS_PACKAGEROOT}/build"
+
+SHS_MAKE_ARGS="\
+ --print-directory\
+\
+ KDIR=${kernel_source_dir}\
+ KERNELRELEASE=${kernelrel}\
+\
+ SHS_DKMS_BUILDROOT=${SHS_DKMS_BUILDROOT}\
+"
+
+# The default make command should be put into MAKE[0]. Other entries in the MAKE array will only be used
+#   if their corresponding entry in MAKE_MATCH[#] matches, as a regular expression (using egrep), the
+#   kernel that the module is being built for.
+MAKE="'make' ${SHS_MAKE_ARGS} modules"
+CLEAN="'make' ${SHS_MAKE_ARGS} clean"
+
+## SHS global default DKMS settings (expected to not change between any SHS components)
+# Rebuild and autoinstall automatically when dkms_autoinstaller runs for a new kernel
+AUTOINSTALL="yes"
+
+# Post-build hook to copy our Module.symvers into the DKMS tree so that other modules can build against it
+POST_BUILD="dkms.post_build.sh ${SHS_DKMS_BUILDROOT} ${SHS_DKMS_PACKAGEROOT}"
+
+## Per-module variables
+# destination is 'extra' rather than kernel due to the fact our modules are not in-tree modules.
+# see https://docs.kernel.org/kbuild/modules.html#module-installation for details
+
+#
+# kdreg2.ko
+#
+BUILT_MODULE_NAME[0]=kdreg2
+DEST_MODULE_NAME[0]=kdreg2
+BUILT_MODULE_LOCATION[0]=.
+DEST_MODULE_LOCATION[0]=/extra
+STRIP[0]=no
+
+#

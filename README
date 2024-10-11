@@ -1,0 +1,159 @@
+#
+# dreg README
+#
+# $Id: README,v 1.4 2007/06/25 23:37:21 pw Exp $
+#
+# Copyright (C) 2000-5 Pete Wyckoff <pw@osc.edu>
+#
+# Distributed under the GNU Public License Version 2 (See LICENSE).
+#
+
+Description
+===========
+
+This kernel module and userspace library together implement a virtual
+memory (VM) monitoring system for the linux kernel.  When communication
+libraries, such as MPI or PVFS2, support network devices that require memory
+registration, such as Infiniband, the libraries tend to register user
+memory dynamically and cache those registrations hoping to later reuse
+them.  Unfortunately, the user application can unmap the memory, through a
+call to free() or explicit munmap(), for example, and the communication
+library never finds out.  With this work, the kernel module notices the VM
+activity and notifies the userspace communication library of what happened.
+
+See the conference paper for more details:
+
+    http://www.osc.edu/~pw/papers/wyckoff-memreg-ccgrid05.pdf
+
+published as:
+
+    @inproceedings{pw-memreg-ccgrid05,
+	author = "Pete Wyckoff and Jiesheng Wu",
+	title = "Memory registration caching correctness",
+	booktitle = "Proceedings of {CCGrid}'05",
+	address = "Cardiff, UK",
+	month = may,
+	year = 2005,
+    }
+
+
+Implementation
+==============
+
+This version of the code works on stock linux version 2.6.6 and perhaps
+newer.  The userspace test programs are compiled against "gen1" Mellanox
+VAPI.  This is very much a test code to demonstrate feasibility.  Major
+rewrite is necessary to obtain production quality code.
+
+dreg.c dreg.h
+-------------
+The kernel module registers a character device for communication with
+userspace.  An application opens the device, creating a new struct
+dreg_context that manages two features:
+
+    - list of registered ("watched") memory regions
+    - queue of user notification events
+
+The module handles two entities:  user applications and the kernel VM
+system.
+
+When the application registers memory, it then notifies the kernel via
+a write() to the device.  The kernel module creates a new struct
+dreg_region and changes the struct vm_operations_struct entry in the
+struct vm_area_struct entries in the users' virtual memory map that cover
+the registered region.
+
+When the application deregisters memory, it notifies the kernel so that the
+region can be deleted and the original vm_operations restored.
+
+If the application triggers the VM system to change mappings, callbacks
+will be generated through the operations struct to kernel module.  If
+memory has changed in such a way that some registration is no longer valid,
+such as by unmapping the memory from the virtual address space, the kernel
+marks affected registrations as invalid.  These are queued for later reads
+from the application.
+
+udreg.c udreg.h
+---------------
+The application, or more precisely, the library, replaces the usual IB
+memory registration and deregistration calls with wrappers around the IB
+call and a write to the kernel module notifying it of new or removed
+registrations.  It also has a call to poll the kernel for deregistrations
+forced by VM changes, via a memory read of an integer with a system call
+only if something has changed.  The application, or more accurately,
+communication library, is expected to call the check function when it plans
+to reuse a cached registration for a send or receive.
+
+test.c
+------
+Low-level test program to verify the many possible messy cases that arise,
+such as unmapping a few pages in the middle of a larger allocation with
+multiple overlapping registrations.  Also includes some timing tests.  Runs
+independently on 1 node.
+
+bw.c
+----
+Test throughput program.  Requires two nodes.  Be sure to read the code to
+understand the various options.
+
+util.c util.h
+-------------
+Handy little functions to make coding easier.
+
+
+Improvements
+============
+
+The structures that represent memory regions should be decoupled from those
+that track known registrations.  Now they are mixed into one struct
+dreg_region, leading to the complexity of "subordinate" regions for other
+registrations that overlap a given region.
+
+Probably want a red-black tree instead of a linear list for the regions.
+
+Handle notification queue overflow gracefully, perhaps with Roland's idea
+of directly scribbling on userspace data structures.
+
+Merge registration and VM notification steps into a single call to avoid
+some overhead; ditto on deregistration.
+
+Switch to OpenIB now that user verbs API is available.
+
+Think about how multiple communication libraries should use same kernel
+module interface and share registrations.
+
+Implement a cache structure in userspace; now this just pretends to cache
+but relies on the test programs to remember the cache state.
+
+The vm_operations_struct is not exactly the best interface, as it really is
+designed more for reference counting.  Would also like to have a .changed
+callback, for example, to say when the start or end or perms of a VMA were
+modified.  Now we just figure that out implicitly by knowing the state
+before and looking at the new VMA in the .open callback.
+
+
+Licensing
+=========
+
+This distribution is licensed under the GPL version 2 (not later), as
+described in the file LICENSE.  Some files are also licensed for use
+under the LGPL version 2.1, as described in the file LICENSE.lgpl.
+These are the six required files to use dreg in user applications:  the
+kernel modules dreg.[ch], the userspace "library" udreg.[ch], and
+support utilities util.[ch].  They may be linked into non-free
+applications using the LGPL license.
+
+HPE/Cray Improvements - 2023
+=====================
+
+The list of monitored regions is now stored in a Linux kernel supported
+Red-Black Interval Tree.
+
+In addition to the starting address and length, the intervals are identified
+by a 'cookie' (a user-supplied 64-bit value).  The use of the cookies can
+distinguish the case where a region is re-monitored after being invalidated
+but before the corresponding event has been processed in user space.
+
+In addition to generating mapping change events, each region is assigned
+a user-space readable generation number.  Multiple regions can be evaluated for
+validity in parallel.  
