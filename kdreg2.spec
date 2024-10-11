@@ -23,7 +23,7 @@
 %endif
 
 Name:           kdreg2
-Version:        0.4
+Version:        1.0.0
 Release:        %(echo ${BUILD_METADATA})
 Summary:        HPE Kdreg2 kernel memory monitor module
 License:        GPL-2.0
