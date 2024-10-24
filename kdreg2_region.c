@@ -616,13 +616,13 @@ kdreg2_region_db_next_overlap(struct kdreg2_region_db_overlap_state *overlap_sta
 
 #if KDREG2_DB_MODE == KDREG2_DB_MODE_RBTREE
 
-static inline __attribute__((always_inline))
+static __always_inline
 unsigned long kdreg2_region_start(struct kdreg2_region *region)
 {
 	return region->addr;
 }
 
-static inline __attribute__((always_inline))
+static __always_inline
 unsigned long kdreg2_region_last(struct kdreg2_region *region)
 {
 	return region->last;

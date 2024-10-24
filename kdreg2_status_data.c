@@ -47,9 +47,9 @@ int kdreg2_status_init(struct kdreg2_status *status,
 
 	status->kern_addr->version = kdreg2_global.driver_version;
 	status->kern_addr->max_regions = num_entities;
-	atomic64_set(&status->kern_addr->pending_events, 0);
-	atomic64_set(&status->kern_addr->total_events, 0);
-	atomic64_set(&status->kern_addr->num_active_regions, 0);
+	kdreg2_set_counter(&status->kern_addr->pending_events, 0);
+	kdreg2_set_counter(&status->kern_addr->total_events, 0);
+	kdreg2_set_counter(&status->kern_addr->num_active_regions, 0);
 
 	KDREG2_DEBUG(KDREG2_DEBUG_INIT, 2,
 		     "Status data: user_addr 0x%px, kern_addr 0x%px, bytes %zi",

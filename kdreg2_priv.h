@@ -62,6 +62,25 @@ typedef u_int64_t  uint64_t;
 
 #include "include/kdreg2.h"
 
+static __always_inline
+void kdreg2_set_counter(struct kdreg2_counter *counter,
+			uint64_t value)
+{
+	WRITE_ONCE(counter->val, value);
+
+	/* Force synchronization across threads */
+	smp_mb();
+}
+
+static __always_inline
+void kdreg2_inc_counter(struct kdreg2_counter *counter)
+{
+	WRITE_ONCE(counter->val, READ_ONCE(counter->val) + 1);
+
+	/* Force synchronization across threads */
+	smp_mb();
+}
+
 #if   (KDREG2_DB_MODE == KDREG2_DB_MODE_DLLIST)
 #define KDREG2_DB_MODE_NAME "List"
 #elif (KDREG2_DB_MODE == KDREG2_DB_MODE_RBTREE)
@@ -278,9 +297,8 @@ extern struct kdreg2_global kdreg2_global;
 #error "KDREG2_DEBUG_MODE not defined in kdreg2_config.h."
 #endif
 
-__attribute__((always_inline))
-static inline bool
-KDREG2_DEBUG_ON(uint32_t type, uint32_t level)
+static __always_inline
+bool KDREG2_DEBUG_ON(uint32_t type, uint32_t level)
 {
 	return ((kdreg2_global.debug_level >= level) &&
 		(kdreg2_global.debug_mask & type)) ? true : false;
@@ -295,7 +313,7 @@ do {                                                   \
 	}                                              \
 } while (0)
 
-__attribute__((unused))
+__maybe_unused
 static struct kdreg2_monitoring_state _bad_index =
 {
 	.u.raw = (unsigned) -1,
@@ -303,8 +321,8 @@ static struct kdreg2_monitoring_state _bad_index =
 
 #define BAD_INDEX (_bad_index.u.bits.data)
 
-__attribute__((always_inline))
-static inline int kdreg2_detect_fork(struct kdreg2_context *context)
+static __always_inline
+int kdreg2_detect_fork(struct kdreg2_context *context)
 {
 	/* Return error EIO if current->mm != context->mm.
 	 * This will happen in the new process after fork if
@@ -344,7 +362,7 @@ int kdreg2_context_resize(struct kdreg2_context *context,
 			  const size_t max_regions);
 void kdreg2_context_wakeup(struct kdreg2_context *context);
 
-static inline __attribute__((always_inline))
+static __always_inline
 void kdreg2_context_lock(struct kdreg2_context *context)
 {
 	int    ret;
@@ -365,7 +383,7 @@ void kdreg2_context_lock(struct kdreg2_context *context)
 		     "context lock acquired");
 }
 
-static inline __attribute__((always_inline))
+static __always_inline
 void kdreg2_context_unlock(struct kdreg2_context *context)
 {
 	mutex_unlock(&context->lock);
@@ -389,7 +407,7 @@ int kdreg2_event_queue_insert(struct kdreg2_context *context,
 			      struct kdreg2_event *event);
 int kdreg2_event_queue_flush(struct kdreg2_context *context);
 
-static inline __attribute__((always_inline))
+static __always_inline
 size_t kdreg2_event_queue_get_num_pending(struct kdreg2_event_queue *event_queue)
 {
 	return event_queue->num_pending;
@@ -409,8 +427,8 @@ long kdreg2_ioctl(struct file *file, unsigned int cmd,
 
 /* **************** kdreg2_main.c **************** */
 
-__attribute__((always_inline))
-static inline void kdreg2_global_lock(void)
+static __always_inline
+void kdreg2_global_lock(void)
 {
 	int ret;
 
@@ -421,8 +439,8 @@ static inline void kdreg2_global_lock(void)
 	while(ret);
 }
 
-__attribute__((always_inline))
-static inline void kdreg2_global_unlock(void)
+static __always_inline
+void kdreg2_global_unlock(void)
 {
 	mutex_unlock(&kdreg2_global.driver_lock);
 }
@@ -443,32 +461,35 @@ int kdreg2_monitoring_data_resize(struct kdreg2_context *context,
 				  const size_t num_entities);
 ssize_t find_free_monitoring_state_index(struct kdreg2_context *context);
 
-static inline __attribute__((always_inline))
+static __always_inline
 size_t kdreg2_get_num_monitoring_state(struct kdreg2_monitoring_data *monitoring_data)
 {
 	return monitoring_data->num_monitoring_state;
 }
 
-__attribute__((always_inline))
-static inline void kdreg2_set_monitoring_state(struct kdreg2_monitoring_state *monitoring_state,
-					       bool in_use,
-					       unsigned int data)
+static __always_inline
+void kdreg2_set_monitoring_state(struct kdreg2_monitoring_state *monitoring_state,
+				 bool in_use,
+				 unsigned int data)
 {
-	struct kdreg2_monitoring_state state = {
+	struct kdreg2_monitoring_state ms = {
 		.u.bits = { .in_use = (in_use) ? 1 : 0,
 			    .data   = data },
 	};
 
-	atomic_set_release(&monitoring_state->u.state, state.u.raw);
+	WRITE_ONCE(monitoring_state->u.state.val, ms.u.state.val);
+
+	/* force synchronization across threads */
+	smp_mb();
 }
 
-__attribute__((always_inline))
-static inline uint32_t kdreg2_get_monitoring_state(struct kdreg2_monitoring_state *ms)
+static __always_inline
+uint32_t kdreg2_get_monitoring_state(struct kdreg2_monitoring_state *ms)
 {
-	return atomic_read(&ms->u.state);
+	return ms->u.state.val;
 }
 
-static inline __attribute__((always_inline))
+static __always_inline
 void kdreg2_monitoring_state_free(struct kdreg2_context *context,
 				  const size_t monitoring_state_index)
 {
@@ -484,14 +505,13 @@ void kdreg2_monitoring_state_free(struct kdreg2_context *context,
 	monitoring_data->free_list_head_index = monitoring_state_index;
 }
 
-__attribute__((always_inline))
-static inline
+static __always_inline
 uint32_t kdreg2_monitoring_state_get_state(struct kdreg2_context *context,
 					   const size_t monitoring_state_index)
 {
 	struct kdreg2_monitoring_state *base = context->monitoring_data.kern_addr;
 
-	return atomic_read_acquire(&base[monitoring_state_index].u.state);
+	return base[monitoring_state_index].u.state.val;
 }
 
 /* **************** kdreg2_region.c **************** */
@@ -523,24 +543,24 @@ void kdreg2_status_set_monitoring_state_base(struct kdreg2_status *status,
 void kdreg2_status_set_max_regions(struct kdreg2_status *status,
 				   const size_t max_regions);
 
-static inline __attribute__((always_inline))
+static __always_inline
 void kdreg2_status_set_pending_events(struct kdreg2_status *status,
 				      const uint64_t value)
 {
-	atomic64_set_release(&status->kern_addr->pending_events, value);
+	kdreg2_set_counter(&status->kern_addr->pending_events, value);
 }
 
-static inline __attribute__((always_inline))
+static __always_inline
 void kdreg2_status_inc_total_events(struct kdreg2_status *status)
 {
-	atomic64_inc_return_release(&status->kern_addr->total_events);
+	kdreg2_inc_counter(&status->kern_addr->total_events);
 }
 
-static inline __attribute__((always_inline))
+static __always_inline
 void kdreg2_status_set_num_active_regions(struct kdreg2_status *status,
 					  const uint64_t value)
 {
-	atomic64_set_release(&status->kern_addr->num_active_regions, value);
+	kdreg2_set_counter(&status->kern_addr->num_active_regions, value);
 }
 
 /* **************** kdreg2_vm.c **************** */

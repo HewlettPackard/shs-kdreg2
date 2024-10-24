@@ -19,10 +19,10 @@
 #include <linux/types.h>
 #else
 #include <sys/ioctl.h>
-#include <stdatomic.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#define __user
 #endif
 
 #ifdef	__cplusplus
@@ -53,44 +53,18 @@ extern "C" {
 #define BUILD_BUG_ON(condition) ((void) sizeof(char[1-2*!!(condition)]))
 #endif
 
-/* This file defines the API used by user-space programs to access
+/*
+ * This file defines the API used by user-space programs to access
  * the kernel module.  As such, it must compile in both regimes.
- *
- * The kernel and user-space don't always agree on type names.
- * In particular, no commonality exists for the atomic types.
- *
- * These types are defined in <linux/types.h> for the kernel.
- * The corresponding types are in <stdatomic.h> for user-space.
- *
- * The definitions in <stdatomic.h> are not super-helpful.
- * They provide types with sizes of 'at least' a certain number of
- * bits but no way to specify a type with the desired number of bits.
  */
 
-#ifndef __KERNEL__
-#define atomic_t   atomic_uint
-#define atomic64_t atomic_long
-#define __user
-#endif
+struct kdreg2_state {
+	uint32_t    val;
+};
 
-/* Dummy function to test at compile time that we selected the
- * proper atomic* types.  If this doesn't compile, change the
- * atomic types from <stdatomic.h> (the right-hand-side of the
- * #define's above).  The only atomic types available in the
- * kernel are atomic_t and atomic64_t.
- */
-
-static inline __attribute__((unused, always_inline))
-void _dummy_func_to_confirm_types_are_compatible(void)
-{
-	/* It would be nice to test:
-	 *     sizeof(atomic_t) != sizeof(atomic_uint)
-	 * but these types exist in different spaces.
-	 */
-
-	BUILD_BUG_ON(sizeof(atomic_t)   != 4);
-	BUILD_BUG_ON(sizeof(atomic64_t) != 8);
-}
+struct kdreg2_counter {
+	uint64_t    val;
+};
 
 /*
  * Users supply a cookie at registration time.
@@ -127,18 +101,11 @@ struct kdreg2_monitoring_state {
 		struct {
 			unsigned int   in_use : 1;
 			unsigned int   data   : 31;
-		} bits __attribute__((packed));
+		} bits;
 		uint32_t      raw;
-		atomic_t      state;
+		struct kdreg2_state     state;
 	} u;
 };
-
-static inline __attribute__((unused, always_inline))
-void _dummy_func2_to_confirm_types_are_compatible(void)
-{
-	BUILD_BUG_ON(sizeof(struct kdreg2_monitoring_state) != sizeof(atomic_t));
-}
-
 
 /* Ioctl for setting the configurable parameters.
  *
@@ -227,7 +194,7 @@ struct kdreg2_status_data {
 	 * Read with kdreg2_read_counter().
 	 */
 
-	atomic64_t       pending_events;
+	struct kdreg2_counter   pending_events;
 
 	/*
 	 * Total number of events generated
@@ -236,7 +203,7 @@ struct kdreg2_status_data {
 	 * Read with kdreg2_read_counter().
 	 */
 
-	atomic64_t       total_events;
+	struct kdreg2_counter   total_events;
 
 	/*
 	 * Number of regions currently being monitored.
@@ -244,7 +211,7 @@ struct kdreg2_status_data {
 	 * Read with kdreg2_read_counter().
 	 */
 
-	atomic64_t       num_active_regions;
+	struct kdreg2_counter   num_active_regions;
 
 	/*
 	 * User space location of the monitoring state array.
@@ -262,10 +229,10 @@ struct kdreg2_status_data {
  */
 
 #ifndef __KERNEL__
-static inline __attribute__((always_inline))
-uint64_t kdreg2_read_counter(const atomic64_t *counter)
+static __always_inline
+uint64_t kdreg2_read_counter(const struct kdreg2_counter *counter)
 {
-	return atomic_load_explicit(counter, memory_order_acquire);
+	return *((const volatile typeof(counter->val) *) &counter->val);
 }
 #endif
 
@@ -347,7 +314,7 @@ struct kdreg2_ioctl_monitor {
  */
 
 #ifndef __KERNEL__
-static inline __attribute__((always_inline))
+static __always_inline
 bool kdreg2_mapping_changed(const struct kdreg2_status_data *status_data,
 			    const struct kdreg2_monitoring_params *monitoring_params)
 {
@@ -363,8 +330,7 @@ bool kdreg2_mapping_changed(const struct kdreg2_status_data *status_data,
 
 	ms = status_data->monitoring_state_base + monitoring_params->location;
 
-	current_generation = atomic_load_explicit(&ms->u.state,
-						  memory_order_acquire);
+	current_generation = *(const volatile typeof(ms->u.state.val) *) &(ms->u.state.val);
 
 	return current_generation != monitoring_params->generation;
 }

@@ -58,7 +58,7 @@ int test_free_list(const struct kdreg2_config_data *config)
 
 	for(size_t i = 0; i < config->max_regions-1; i++, ms++) {
 
-		uint32_t gen = atomic_load(&ms->u.state);
+		uint32_t gen = ms->u.state.val;
 		uint32_t next = gen >> 1;
 
 		if ((gen & 0x01) ||
@@ -68,7 +68,7 @@ int test_free_list(const struct kdreg2_config_data *config)
 		}
 	}
 
-	uint32_t gen = atomic_load(&ms->u.state);
+	uint32_t gen = ms->u.state.val;
 	uint32_t next = gen >> 1;
 	uint32_t bad_index = (((uint32_t) -1) << 1) >> 1;
 

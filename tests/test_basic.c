@@ -586,9 +586,13 @@ static void test_registered(struct common_data *data, size_t num_registered)
 			continue;
 		}
 
+		const struct kdreg2_monitoring_state  *ms;
+
+		ms = data->status_data->monitoring_state_base +
+			cookie_data->monitoring_params.location;
+
 		test_fail("Registration data invalid cookie %zi: found %u, expected %u.",
-			  i, atomic_load(&data->status_data->monitoring_state_base[cookie_data->monitoring_params.location].u.state),
-			  cookie_data->monitoring_params.generation);
+			  i, ms->u.state.val, cookie_data->monitoring_params.generation);
 	}
 
 	test_info("Verification of %zi registered regions successful.", num_registered);
@@ -646,10 +650,13 @@ static void test_unregistered(struct common_data *data, size_t num_unregistered)
 		if (!kdreg2_mapping_changed(data->status_data, &cookie_data->monitoring_params))
 			test_fail("Registration %zi is valid (expected invalid).", i);
 
+		const struct kdreg2_monitoring_state *ms;
+
+		ms = data->status_data->monitoring_state_base +
+			cookie_data->monitoring_params.location;
+
 		test_info("Registration data is invalid cookie %zi: found %u, orig %u. (this is good).",
-			  i,
-			  atomic_load(&data->status_data->monitoring_state_base[cookie_data->monitoring_params.location].u.state),
-			  cookie_data->monitoring_params.generation);
+			  i, ms->u.state.val, cookie_data->monitoring_params.generation);
 	}
 
 	test_info("Verification of %zi unregistered regions successful.", num_unregistered);
@@ -733,7 +740,7 @@ static int test_free_list(const struct kdreg2_status_data *status_data)
 
 	for(size_t i = 0; i < status_data->max_regions-1; i++, ms++) {
 
-		uint32_t gen = atomic_load(&ms->u.state);
+		uint32_t gen = ms->u.state.val;
 		uint32_t next = gen >> 1;
 
 		if ((gen & 0x01) ||
@@ -742,7 +749,7 @@ static int test_free_list(const struct kdreg2_status_data *status_data)
 		}
 	}
 
-	uint32_t gen = atomic_load(&ms->u.state);
+	uint32_t gen = ms->u.state.val;
 	uint32_t next = gen >> 1;
 	uint32_t bad_index = (((uint32_t) -1) << 1) >> 1;
 
