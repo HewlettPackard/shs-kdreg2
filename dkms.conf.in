@@ -1,5 +1,5 @@
 #
-# Copyright 2023 Hewlett Packard Enterprise Development LP
+# Copyright 2023,2025 Hewlett Packard Enterprise Development LP
 #
 
 ## Global options
@@ -23,8 +23,8 @@ SHS_MAKE_ARGS="\
 # The default make command should be put into MAKE[0]. Other entries in the MAKE array will only be used
 #   if their corresponding entry in MAKE_MATCH[#] matches, as a regular expression (using egrep), the
 #   kernel that the module is being built for.
-MAKE="'make' ${SHS_MAKE_ARGS} modules"
-CLEAN="'make' ${SHS_MAKE_ARGS} clean"
+MAKE="'make' --jobs=${parallel_jobs} ${SHS_MAKE_ARGS} modules"
+CLEAN="'make' --jobs=${parallel_jobs} ${SHS_MAKE_ARGS} clean"
 
 ## SHS global default DKMS settings (expected to not change between any SHS components)
 # Rebuild and autoinstall automatically when dkms_autoinstaller runs for a new kernel
