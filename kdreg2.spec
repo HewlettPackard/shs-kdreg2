@@ -65,6 +65,7 @@ Development files for Kdreg2 memory monitor
 %package dkms
 Summary:        DKMS support for %{name} kernel modules
 Requires: 	dkms
+Requires:	kdreg2
 Conflicts:      %{distro_kernel_package_name}
 BuildArch: 	noarch
 
@@ -149,6 +150,12 @@ ${postinst} %{name} %{version}-%{release}
 rm -f %{_modulesloaddir}/%{name}.conf || true
 
 %post
+# create module directory if necessary
+if [ ! -d %{_modulesloaddir} ]
+then
+	mkdir -p %{_modulesloaddir}
+fi
+
 # Create the systemd load file
 if [ ! -f %{_modulesloaddir}/%{name}.conf ]
 then
