@@ -487,8 +487,8 @@ long kdreg2_ioctl(struct file *file,
 		ret = (*ioctl_data[i].func)(context, arg);
 
 		if (ret)
-			pr_warn("%s: failure %i",
-				ioctl_data[i].ioctl_name, ret);
+			pr_warn_ratelimited("%s: failure %i",
+					    ioctl_data[i].ioctl_name, ret);
 		else
 			KDREG2_DEBUG(KDREG2_DEBUG_IOCTL, 1,
 				     "%s: success.",

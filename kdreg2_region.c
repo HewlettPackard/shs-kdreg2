@@ -160,7 +160,7 @@ kdreg2_monitor_region(struct kdreg2_context *context,
 		if (!region_db->max_regions)
 			pr_warn("Attempt to register region when max_regions 0.");
 		else
-			pr_warn("Region database full, rejecting request to monitor region.");
+			pr_warn_ratelimited("Region database full, rejecting request to monitor region.");
 		ret = -ENOSPC;
 		goto err;
 	}
