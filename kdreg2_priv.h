@@ -336,7 +336,7 @@ int kdreg2_detect_fork(struct kdreg2_context *context)
 		     current->mm, context->mm);
 
 	if (context->warn_on_fork_detected) {
-		pr_warn("Fork() detected - monitoring not supported in child");
+		pr_warn_ratelimited("Fork() detected - monitoring not supported in child");
 		context->warn_on_fork_detected = false;
 	}
 
