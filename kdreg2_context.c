@@ -148,7 +148,7 @@ int kdreg2_context_resize(struct kdreg2_context *context,
 	int ret;
 	size_t i, bad_index;
 
-	pr_info("resize to %zu entities", num_entities);
+	pr_info_ratelimited("resize to %zu entities", num_entities);
 
 	/* The free list uses the data field in the monitoring_data
 	 * as an index.  So we can only handle as many entities

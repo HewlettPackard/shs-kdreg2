@@ -2,10 +2,6 @@
 
 pipeline {
     options {
-        // We skip the default checkout from git so that we can
-        // wrap it in a retry() block to improve reliability.
-        skipDefaultCheckout(true)
-
         // Generic build options
         buildDiscarder(logRotator(numToKeepStr: '15'))
 
@@ -18,6 +14,7 @@ pipeline {
         timestamps()
         skipStagesAfterUnstable()
         parallelsAlwaysFailFast()
+        retry(3)
     }
     agent {
         node {
@@ -25,20 +22,6 @@ pipeline {
         }
     }
     stages {
-        stage('Clean Workspace') {
-            steps {
-                retry(3) {        // file system on wham is flakey,
-                    cleanWs()     // try multiple times
-                }
-            }
-        }
-        stage('Clone Kdreg2 Repo') {
-            steps {
-                retry(3) {        // connection to repo is somewhat flakey,
-                    checkout scm  // try multiple times
-                }
-            }
-        }
 	stage('Build Module') {
             steps {
                 sh "make modules"

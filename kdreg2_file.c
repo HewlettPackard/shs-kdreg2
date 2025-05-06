@@ -82,7 +82,7 @@ int kdreg2_open(struct inode *inode,
 
 	kdreg2_global_unlock();
 
-	pr_info("Instance opened.\n");
+	pr_info_ratelimited("Instance opened.\n");
 
 	return 0;
 
@@ -120,7 +120,7 @@ int kdreg2_release(struct inode *inode,
 
 	if (!file || !file->private_data) {
 		kdreg2_global_unlock();
-		pr_info("Instance closed, nothing to do.\n");
+		pr_info_ratelimited("Instance closed, nothing to do.\n");
 		return 0;
 	}
 
@@ -147,7 +147,7 @@ int kdreg2_release(struct inode *inode,
 	}
 
 	module_put(THIS_MODULE);
-	pr_info("Instance closed.\n");
+	pr_info_ratelimited("Instance closed.\n");
 
 	return 0;
 }
