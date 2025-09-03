@@ -40,7 +40,7 @@ int kdreg2_monitoring_data_init(struct kdreg2_monitoring_data *monitoring_data,
 				   "monitoring_state");
 
 	if (ret) {
-		pr_warn("Failure: %i", ret);
+		KDREG2_WARN(KDREG2_LOG_NORMAL, "Failure: %i", ret);
 		return ret;
 	}
 

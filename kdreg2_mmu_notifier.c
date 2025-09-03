@@ -33,7 +33,7 @@ kdreg2_invalidate_range_end(struct mmu_notifier *notifier,
 			     mmu_notifier_data.mmu_notifier);
 
 	if (!context) {
-		pr_warn("mmu_notifier callback given null argument.");
+		KDREG2_WARN(KDREG2_LOG_NORMAL, "mmu_notifier callback given null argument.");
 		return;
 	}
 
@@ -60,7 +60,7 @@ kdreg2_invalidate_range_end(struct mmu_notifier *notifier,
 			     mmu_notifier_data.mmu_notifier);
 
 	if (!context) {
-		pr_warn("mmu_notifier callback given null argument.");
+		KDREG2_WARN(KDREG2_LOG_NORMAL, "mmu_notifier callback given null argument.");
 		return;
 	}
 
@@ -95,7 +95,7 @@ void
 kdreg2_mmu_notifier_data_destroy(struct kdreg2_mmu_notifier_data *notifier_data)
 {
 	if (notifier_data->registered)
-		pr_warn("mmu_notifier still registered");
+		KDREG2_WARN(KDREG2_LOG_NORMAL, "mmu_notifier still registered");
 
 	KDREG2_DEBUG(KDREG2_DEBUG_INIT, 1, "mmu_notifier_data destroyed");
 }
@@ -118,7 +118,7 @@ int kdreg2_mmu_notifier_enable(struct kdreg2_context *context)
 		notifier_data->registered = true;
 		KDREG2_DEBUG(KDREG2_DEBUG_INIT, 1, "mmu_notifier enabled");
 	} else {
-		pr_warn("mmu_notifier enable failed: %i", ret);
+		KDREG2_WARN(KDREG2_LOG_NORMAL, "mmu_notifier enable failed: %i", ret);
 	}
 
 	return ret;

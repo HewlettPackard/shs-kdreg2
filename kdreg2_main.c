@@ -85,11 +85,11 @@ static int __init kdreg2_module_init(void)
 	int ret;
 	size_t i;
 
-	pr_info("%s - version 0x%llx\n", kdreg2_global.driver_string,
-		kdreg2_global.driver_version);
+	KDREG2_INFO(KDREG2_LOG_NORMAL, "%s - version 0x%llx\n",
+	            kdreg2_global.driver_string, kdreg2_global.driver_version);
 
 	for (i = 0; i < kdreg2_global.num_copyright; i++)
-		pr_info("%s\n", kdreg2_global.driver_copyright[i]);
+		KDREG2_INFO(KDREG2_LOG_NORMAL, "%s\n", kdreg2_global.driver_copyright[i]);
 
 	/* Register driver */
 	if (!kdreg2_global.major_dev) {
@@ -128,8 +128,8 @@ static int __init kdreg2_module_init(void)
 #endif
 	if (IS_ERR(kdreg2_global.class)) {
 		ret = PTR_ERR(kdreg2_global.class);
-		pr_warn("couldn't create class %s\n",
-			kdreg2_global.class_name);
+		KDREG2_WARN(KDREG2_LOG_NORMAL, "couldn't create class %s\n",
+		            kdreg2_global.class_name);
 		goto err_class_create;
 	}
 
@@ -147,18 +147,19 @@ static int __init kdreg2_module_init(void)
 
 	if (IS_ERR(kdreg2_global.class_device)) {
 		ret = PTR_ERR(kdreg2_global.class_device);
-		pr_warn("class_device_create() returned error %d\n", ret);
+		KDREG2_WARN(KDREG2_LOG_NORMAL, "class_device_create() returned error %d\n",
+		            ret);
 		goto err_class_dev;
 	}
 
 	ret = kdreg2_create_class_device_files();
 	if (ret) {
-		pr_warn("couldn't create attribute files.\n");
+		KDREG2_WARN(KDREG2_LOG_NORMAL, "couldn't create attribute files.\n");
 		goto err_class_dev_attr_files;
 	}
 
-	pr_info("data mode: %s\n", KDREG2_DB_MODE_NAME);
-	pr_info("Module installed successfully.\n");
+	KDREG2_INFO(KDREG2_LOG_NORMAL, "data mode: %s\n", KDREG2_DB_MODE_NAME);
+	KDREG2_INFO(KDREG2_LOG_NORMAL, "Module installed successfully.\n");
 
 	return 0;
 
@@ -182,7 +183,7 @@ err_cdev_add:
 
 err_alloc_chrdev:
 
-	pr_warn("Module installation aborted: %i.\n", ret);
+	KDREG2_WARN(KDREG2_LOG_NORMAL, "Module installation aborted: %i.\n", ret);
 
 	return ret;
 }
@@ -206,7 +207,7 @@ static void __exit kdreg2_module_exit(void)
 	unregister_chrdev_region(kdreg2_global.dev_id,
 				 kdreg2_global.driver_numdev);
 
-	pr_info("Module uninstalled.\n");
+	KDREG2_INFO(KDREG2_LOG_NORMAL, "Module uninstalled.\n");
 
 }
 

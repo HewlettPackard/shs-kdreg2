@@ -36,7 +36,7 @@ int kdreg2_status_init(struct kdreg2_status *status,
 				   "status_data");
 
 	if (ret) {
-		pr_warn("Failure: %i", ret);
+		KDREG2_WARN(KDREG2_LOG_NORMAL, "Failure: %i", ret);
 		return ret;
 	}
 

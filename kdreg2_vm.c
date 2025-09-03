@@ -39,8 +39,9 @@ static int my_access(struct vm_area_struct *vma, unsigned long addr,
 {
 	int ret = generic_access_phys(vma, addr, buf, len, write);
 
-	pr_info("Accessing 0x%lx size %i flags 0x%lx, ret = %i\n",
-		addr, len, vma->vm_flags, ret);
+	KDREG2_INFO(KDREG2_LOG_NORMAL,
+		    "Accessing 0x%lx size %i flags 0x%lx, ret = %i\n",
+		    addr, len, vma->vm_flags, ret);
 	return ret;
 }
 
@@ -127,8 +128,8 @@ int kdreg2_create_vm_map(struct kdreg2_vm_map *vm_map,
 	kern_virtual_addr = vmalloc_user(mapping_size);
 
 	if (!kern_virtual_addr) {
-		pr_warn("Unable to allocate %zu bytes for mapping",
-			mapping_size);
+		KDREG2_WARN(KDREG2_LOG_NORMAL, "Unable to allocate %zu bytes for mapping",
+		            mapping_size);
 		return -ENOMEM;
 	}
 
@@ -143,8 +144,9 @@ int kdreg2_create_vm_map(struct kdreg2_vm_map *vm_map,
 
 	if (IS_ERR(user_virtual_addr)) {
 		ret = PTR_ERR(user_virtual_addr);
-		pr_warn("Unable to find user-space addresses for %zi bytes",
-			mapping_size);
+		KDREG2_WARN(KDREG2_LOG_NORMAL,
+		            "Unable to find user-space addresses for %zi bytes",
+		            mapping_size);
 		goto error_vm_mmap;
 	}
 
@@ -171,9 +173,10 @@ int kdreg2_create_vm_map(struct kdreg2_vm_map *vm_map,
 	ret = remap_vmalloc_range(vma, kern_virtual_addr, 0);
 
 	if (ret) {
-		pr_warn("Unable to map kern virtual address 0x%px "
-			"to user virtual address 0x%px.",
-			kern_virtual_addr, user_virtual_addr);
+		KDREG2_WARN(KDREG2_LOG_NORMAL,
+			    "Unable to map kern virtual address 0x%px "
+			    "to user virtual address 0x%px.",
+			    kern_virtual_addr, user_virtual_addr);
 		goto error_remap_vmalloc_range;
 	}
 
@@ -209,7 +212,7 @@ error_find_vma:
 error_vm_mmap:
 
 	vfree(kern_virtual_addr);
-	pr_warn("Return with error: %i.", ret);
+	KDREG2_WARN(KDREG2_LOG_NORMAL, "Return with error: %i.", ret);
 
 	return ret;
 }

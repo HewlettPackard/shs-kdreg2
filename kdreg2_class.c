@@ -184,8 +184,8 @@ int kdreg2_create_class_device_files(void)
 	for (i = ARRAY_SIZE(device_attrs); i; i--, attr++) {
 		ret = device_create_file(kdreg2_global.class_device, attr);
 		if (ret) {
-			pr_warn("couldn't create '%s' attribute file\n",
-				attr->attr.name);
+			KDREG2_WARN(KDREG2_LOG_NORMAL, "couldn't create '%s' attribute file\n",
+			            attr->attr.name);
 			break;
 		}
 	}

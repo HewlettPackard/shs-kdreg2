@@ -158,9 +158,11 @@ kdreg2_monitor_region(struct kdreg2_context *context,
 
 	if (unlikely(region_db_full(region_db))) {
 		if (!region_db->max_regions)
-			pr_warn("Attempt to register region when max_regions 0.");
+			KDREG2_WARN(KDREG2_LOG_NORMAL,
+			            "Attempt to register region when max_regions 0.");
 		else
-			pr_warn_ratelimited("Region database full, rejecting request to monitor region.");
+			KDREG2_WARN(KDREG2_LOG_RATELIMITED,
+			            "Region database full, rejecting request to monitor region.");
 		ret = -ENOSPC;
 		goto err;
 	}
@@ -169,7 +171,7 @@ kdreg2_monitor_region(struct kdreg2_context *context,
 
 	region = kdreg2_region_allocate(region_db);
 	if (unlikely(!region)) {
-		pr_warn("Unable to allocate region data");
+		KDREG2_WARN(KDREG2_LOG_NORMAL, "Unable to allocate region data");
 		ret = -ENOMEM;
 		goto err;
 	}

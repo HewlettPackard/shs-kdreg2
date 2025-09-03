@@ -82,7 +82,7 @@ int kdreg2_open(struct inode *inode,
 
 	kdreg2_global_unlock();
 
-	pr_info("Instance opened.\n");
+	KDREG2_INFO(KDREG2_LOG_RATELIMITED, "Instance opened.\n");
 
 	return 0;
 
@@ -97,7 +97,7 @@ err_with_context:
 err_ret:
 
 	module_put(THIS_MODULE);
-	pr_info("Instance opening failed: %i.\n", ret);
+	KDREG2_INFO(KDREG2_LOG_NORMAL, "Instance opening failed: %i.\n", ret);
 	return ret;
 }
 
@@ -120,7 +120,7 @@ int kdreg2_release(struct inode *inode,
 
 	if (!file || !file->private_data) {
 		kdreg2_global_unlock();
-		pr_info("Instance closed, nothing to do.\n");
+		KDREG2_INFO(KDREG2_LOG_RATELIMITED, "Instance closed, nothing to do.\n");
 		return 0;
 	}
 
@@ -147,7 +147,7 @@ int kdreg2_release(struct inode *inode,
 	}
 
 	module_put(THIS_MODULE);
-	pr_info("Instance closed.\n");
+	KDREG2_INFO(KDREG2_LOG_RATELIMITED, "Instance closed.\n");
 
 	return 0;
 }
@@ -420,9 +420,10 @@ static long ioctl_dump_stats(struct kdreg2_context *context,
 
 	kdreg2_context_lock(context);
 
-	pr_info("Region allocations: %zu, frees: %zu (difference %zi)\n",
-		region_db->num_allocs, region_db->num_frees,
-		region_db->num_allocs-region_db->num_frees);
+	KDREG2_INFO(KDREG2_LOG_NORMAL,
+	            "Region allocations: %zu, frees: %zu (difference %zi)\n",
+	            region_db->num_allocs, region_db->num_frees,
+	            region_db->num_allocs - region_db->num_frees);
 
 	kdreg2_context_unlock(context);
 
@@ -462,7 +463,8 @@ long kdreg2_ioctl(struct file *file,
 
 	/* sanity check on magic */
 	if (_IOC_TYPE(cmd) != KDREG2_IOC_MAGIC) {
-		pr_warn("Received bad command: 0x%x, arg: 0x%lx", cmd, arg);
+		KDREG2_WARN(KDREG2_LOG_NORMAL, "Received bad command: 0x%x, arg: 0x%lx",
+		            cmd, arg);
 		return -ENOTTY;   /* historical return code for bad command */
 	}
 
@@ -475,8 +477,8 @@ long kdreg2_ioctl(struct file *file,
 			continue;
 
 		if (!arg && ioctl_data[i].has_arg) {
-			pr_warn("Bad arg to Ioctl, command: 0x%x, arg: 0x%lx",
-				cmd, arg);
+			KDREG2_WARN(KDREG2_LOG_NORMAL, "Bad arg to Ioctl, command: 0x%x, arg: 0x%lx",
+			            cmd, arg);
 			return -EINVAL;
 		}
 
@@ -487,8 +489,8 @@ long kdreg2_ioctl(struct file *file,
 		ret = (*ioctl_data[i].func)(context, arg);
 
 		if (ret)
-			pr_warn_ratelimited("%s: failure %i",
-					    ioctl_data[i].ioctl_name, ret);
+			KDREG2_WARN(KDREG2_LOG_RATELIMITED, "%s: failure %i",
+			            ioctl_data[i].ioctl_name, ret);
 		else
 			KDREG2_DEBUG(KDREG2_DEBUG_IOCTL, 1,
 				     "%s: success.",
@@ -496,7 +498,7 @@ long kdreg2_ioctl(struct file *file,
 		return ret;
 	}
 
-	pr_warn("Received unknown command: 0x%x, arg: 0x%lx",
-		cmd, arg);
+	KDREG2_WARN(KDREG2_LOG_NORMAL, "Received unknown command: 0x%x, arg: 0x%lx",
+	            cmd, arg);
 	return -ENOTTY;
 }

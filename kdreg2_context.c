@@ -96,7 +96,7 @@ err_with_region_db:
 
 err:
 
-	pr_warn("Failure: %i", ret);
+	KDREG2_WARN(KDREG2_LOG_NORMAL, "Failure: %i", ret);
 	return ret;
 }
 
@@ -148,7 +148,7 @@ int kdreg2_context_resize(struct kdreg2_context *context,
 	int ret;
 	size_t i, bad_index;
 
-	pr_info("resize to %zu entities", num_entities);
+	KDREG2_INFO(KDREG2_LOG_RATELIMITED, "resize to %zu entities", num_entities);
 
 	/* The free list uses the data field in the monitoring_data
 	 * as an index.  So we can only handle as many entities
@@ -218,7 +218,8 @@ error_unlock:
 
 	kdreg2_context_unlock(context);
 
-	pr_warn("Resize fails for %zu entities: %i.", num_entities, ret);
+	KDREG2_WARN(KDREG2_LOG_NORMAL, "Resize fails for %zu entities: %i.",
+	            num_entities, ret);
 	return ret;
 }
 

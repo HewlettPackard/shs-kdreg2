@@ -54,8 +54,9 @@ int kdreg2_event_queue_init(struct kdreg2_event_queue *event_queue,
 
 	if (!event_queue->pending)
 		/* checkpatch.sh requires no error message here
-		 * pr_warn("Unable to allocate %zu bytes for pending buffer",
-		 * bytes);
+		 * KDREG2_WARN(KDREG2_LOG_NORMAL,
+		 *             "Unable to allocate %zu bytes for pending buffer",
+		 *             bytes);
 		 */
 		return -ENOMEM;
 out:
@@ -306,8 +307,8 @@ out:
 
 	if (unlikely((orig_num_pending >= event_queue->max_events) &&
 		     (event_queue->num_pending < event_queue->max_events))) {
-		pr_info("Notification queue reduced from %zi to %zi\n",
-			orig_num_pending, event_queue->num_pending);
+		KDREG2_INFO(KDREG2_LOG_NORMAL, "Notification queue reduced from %zi to %zi\n",
+			    orig_num_pending, event_queue->num_pending);
 	}
 
 	bytes_copied = num_events * sizeof(*event_queue->pending);
@@ -339,8 +340,9 @@ int kdreg2_event_queue_insert(struct kdreg2_context *context,
 	struct kdreg2_event_queue  *event_queue = &context->event_queue;
 
 	if (unlikely(event_queue->num_pending >= event_queue->max_events)) {
-		pr_warn("Notification queue overflow, discarding event for cookie %llu\n",
-			event->u.mapping_change.cookie);
+		KDREG2_WARN(KDREG2_LOG_NORMAL,
+		            "Notification queue overflow, discarding event for cookie %llu\n",
+		            event->u.mapping_change.cookie);
 		event_queue->overflow = true;
 		return -ENOSPC;
 	}
@@ -352,8 +354,8 @@ int kdreg2_event_queue_insert(struct kdreg2_context *context,
 		event_queue->prod = 0;
 
 	if (unlikely(event_queue->num_pending >= event_queue->max_events)) {
-		pr_notice("Notification queue at max: %zi queued\n",
-			  event_queue->max_events);
+		KDREG2_NOTICE(KDREG2_LOG_NORMAL, "Notification queue at max: %zi queued\n",
+		              event_queue->max_events);
 	}
 
 	kdreg2_status_set_pending_events(&context->status,

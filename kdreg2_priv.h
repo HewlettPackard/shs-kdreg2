@@ -283,6 +283,11 @@ extern struct kdreg2_global kdreg2_global;
 #define KDREG2_MIN_DEBUG_LEVEL   0
 #define KDREG2_MAX_DEBUG_LEVEL   4
 
+/* Log output types for KDREG2 logging macros */
+#define KDREG2_LOG_NORMAL       0
+#define KDREG2_LOG_RATELIMITED  1
+#define KDREG2_LOG_ONCE         2
+
 #if   KDREG2_DEBUG_MODE == KDREG2_DEBUG_MODE_VERBOSE
 
 #define KDREG2_DEBUG_LEVEL KDREG2_MAX_DEBUG_LEVEL
@@ -313,6 +318,36 @@ do {                                                   \
 	}                                              \
 } while (0)
 
+#define KDREG2_INFO(log_type, format, a...)       \
+do {                                              \
+    if (log_type == KDREG2_LOG_RATELIMITED)       \
+        pr_info_ratelimited(format, ##a);         \
+    else if (log_type == KDREG2_LOG_ONCE)         \
+        pr_info_once(format, ##a);                \
+    else                                          \
+        pr_info(format, ##a);                     \
+} while (0)
+
+#define KDREG2_WARN(log_type, format, a...)       \
+do {                                              \
+    if (log_type == KDREG2_LOG_RATELIMITED)       \
+        pr_warn_ratelimited(format, ##a);         \
+    else if (log_type == KDREG2_LOG_ONCE)         \
+        pr_warn_once(format, ##a);                \
+    else                                          \
+        pr_warn(format, ##a);                     \
+} while (0)
+
+#define KDREG2_NOTICE(log_type, format, a...)     \
+do {                                              \
+    if (log_type == KDREG2_LOG_RATELIMITED)       \
+        pr_notice_ratelimited(format, ##a);       \
+    else if (log_type == KDREG2_LOG_ONCE)         \
+        pr_notice_once(format, ##a);              \
+    else                                          \
+        pr_notice(format, ##a);                   \
+} while (0)
+
 __maybe_unused
 static struct kdreg2_monitoring_state _bad_index =
 {
@@ -336,7 +371,8 @@ int kdreg2_detect_fork(struct kdreg2_context *context)
 		     current->mm, context->mm);
 
 	if (context->warn_on_fork_detected) {
-		pr_warn("Fork() detected - monitoring not supported in child");
+		KDREG2_WARN(KDREG2_LOG_RATELIMITED,
+		            "Fork() detected - monitoring not supported in child");
 		context->warn_on_fork_detected = false;
 	}
 
