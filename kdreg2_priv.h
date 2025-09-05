@@ -259,6 +259,7 @@ struct kdreg2_global {
 	int                driver_numdev;
 	int                num_contexts;
 	uint32_t           debug_level;
+	uint32_t           log_level;
 	uint32_t           debug_mask;
 	struct class       *class;
 	struct device      *class_device;
@@ -318,34 +319,88 @@ do {                                                   \
 	}                                              \
 } while (0)
 
-#define KDREG2_INFO(log_type, format, a...)       \
-do {                                              \
-    if (log_type == KDREG2_LOG_RATELIMITED)       \
-        pr_info_ratelimited(format, ##a);         \
-    else if (log_type == KDREG2_LOG_ONCE)         \
-        pr_info_once(format, ##a);                \
-    else                                          \
-        pr_info(format, ##a);                     \
+#define KDREG2_INFO(log_type, format, a...)               \
+do {                                                      \
+    if (kdreg2_global.log_level >= LOGLEVEL_INFO) {    \
+        if (log_type == KDREG2_LOG_RATELIMITED)           \
+            pr_info_ratelimited(format, ##a);             \
+        else if (log_type == KDREG2_LOG_ONCE)             \
+            pr_info_once(format, ##a);                    \
+        else                                              \
+            pr_info(format, ##a);                         \
+    }                                                     \
 } while (0)
 
-#define KDREG2_WARN(log_type, format, a...)       \
-do {                                              \
-    if (log_type == KDREG2_LOG_RATELIMITED)       \
-        pr_warn_ratelimited(format, ##a);         \
-    else if (log_type == KDREG2_LOG_ONCE)         \
-        pr_warn_once(format, ##a);                \
-    else                                          \
-        pr_warn(format, ##a);                     \
+#define KDREG2_NOTICE(log_type, format, a...)             \
+do {                                                      \
+    if (kdreg2_global.log_level >= LOGLEVEL_NOTICE) {  \
+        if (log_type == KDREG2_LOG_RATELIMITED)           \
+            pr_notice_ratelimited(format, ##a);           \
+        else if (log_type == KDREG2_LOG_ONCE)             \
+            pr_notice_once(format, ##a);                  \
+        else                                              \
+            pr_notice(format, ##a);                       \
+    }                                                     \
 } while (0)
 
-#define KDREG2_NOTICE(log_type, format, a...)     \
-do {                                              \
-    if (log_type == KDREG2_LOG_RATELIMITED)       \
-        pr_notice_ratelimited(format, ##a);       \
-    else if (log_type == KDREG2_LOG_ONCE)         \
-        pr_notice_once(format, ##a);              \
-    else                                          \
-        pr_notice(format, ##a);                   \
+#define KDREG2_WARN(log_type, format, a...)               \
+do {                                                      \
+    if (kdreg2_global.log_level >= LOGLEVEL_WARNING) { \
+        if (log_type == KDREG2_LOG_RATELIMITED)           \
+            pr_warn_ratelimited(format, ##a);             \
+        else if (log_type == KDREG2_LOG_ONCE)             \
+            pr_warn_once(format, ##a);                    \
+        else                                              \
+            pr_warn(format, ##a);                         \
+    }                                                     \
+} while (0)
+
+#define KDREG2_ERR(log_type, format, a...)                \
+do {                                                      \
+    if (kdreg2_global.log_level >= LOGLEVEL_ERR) {     \
+        if (log_type == KDREG2_LOG_RATELIMITED)           \
+            pr_err_ratelimited(format, ##a);              \
+        else if (log_type == KDREG2_LOG_ONCE)             \
+            pr_err_once(format, ##a);                     \
+        else                                              \
+            pr_err(format, ##a);                          \
+    }                                                     \
+} while (0)
+
+#define KDREG2_CRIT(log_type, format, a...)               \
+do {                                                      \
+    if (kdreg2_global.log_level >= LOGLEVEL_CRIT) {    \
+        if (log_type == KDREG2_LOG_RATELIMITED)           \
+            pr_crit_ratelimited(format, ##a);             \
+        else if (log_type == KDREG2_LOG_ONCE)             \
+            pr_crit_once(format, ##a);                    \
+        else                                              \
+            pr_crit(format, ##a);                         \
+    }                                                     \
+} while (0)
+
+#define KDREG2_ALERT(log_type, format, a...)              \
+do {                                                      \
+    if (kdreg2_global.log_level >= LOGLEVEL_ALERT) {   \
+        if (log_type == KDREG2_LOG_RATELIMITED)           \
+            pr_alert_ratelimited(format, ##a);            \
+        else if (log_type == KDREG2_LOG_ONCE)             \
+            pr_alert_once(format, ##a);                   \
+        else                                              \
+            pr_alert(format, ##a);                        \
+    }                                                     \
+} while (0)
+
+#define KDREG2_EMERG(log_type, format, a...)              \
+do {                                                      \
+    if (kdreg2_global.log_level >= LOGLEVEL_EMERG) {   \
+        if (log_type == KDREG2_LOG_RATELIMITED)           \
+            pr_emerg_ratelimited(format, ##a);            \
+        else if (log_type == KDREG2_LOG_ONCE)             \
+            pr_emerg_once(format, ##a);                   \
+        else                                              \
+            pr_emerg(format, ##a);                        \
+    }                                                     \
 } while (0)
 
 __maybe_unused

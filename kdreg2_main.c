@@ -60,6 +60,7 @@ struct kdreg2_global kdreg2_global = {
 	.driver_numdev           = 1,
 	.num_contexts            = 0,
 	.debug_level             = KDREG2_DEBUG_LEVEL,
+	.log_level               = LOGLEVEL_DEBUG,
 	.debug_mask              = KDREG2_DEBUG_MASK,
 	.class                   = NULL,
 	.class_device            = NULL,

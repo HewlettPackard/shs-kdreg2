@@ -143,6 +143,49 @@ static ssize_t kdreg2_set_debug_level(struct device *class_dev,
 	return count;
 }
 
+/*
+ * kdreg2_show_log_level - output current kdreg2 log level
+ */
+static ssize_t kdreg2_show_log_level(struct device *class_dev,
+				       struct device_attribute *attr,
+				       char *buf)
+{
+	uint32_t log_level;
+
+	kdreg2_global_lock();
+
+	log_level = kdreg2_global.log_level;
+
+	kdreg2_global_unlock();
+
+	return scnprintf(buf, PAGE_SIZE, "%u\n", log_level);
+}
+
+/*
+ * kdreg2_set_log_level - set the kdreg2 log level
+ */
+static ssize_t kdreg2_set_log_level(struct device *class_dev,
+				     struct device_attribute *attr,
+				     const char *buf,
+				     size_t count)
+{
+	uint32_t value;
+
+	if (kstrtou32(buf, 10, &value))
+		return -EINVAL;
+
+	if (value > LOGLEVEL_DEBUG)
+		return -EINVAL;
+
+	kdreg2_global_lock();
+
+	kdreg2_global.log_level = value;
+
+	kdreg2_global_unlock();
+
+	return count;
+}
+
 #define INIT_DEV_ATTR __ATTR   /* from <linux/sysfs.h> */
 
 static struct device_attribute device_attrs[] = {
@@ -166,6 +209,10 @@ static struct device_attribute device_attrs[] = {
 		      S_IRUGO | S_IWUSR,
 		      kdreg2_show_debug_level,
 		      kdreg2_set_debug_level),
+	INIT_DEV_ATTR(log_level,
+		      S_IRUGO | S_IWUSR,
+		      kdreg2_show_log_level,
+		      kdreg2_set_log_level),
 };
 
 #undef INIT_DEV_ATTR
