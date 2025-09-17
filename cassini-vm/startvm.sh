@@ -6,6 +6,7 @@
 #   ./startvm.sh       -> run one instance with 1 NIC
 #   ./startvm.sh -N 3  -> run one instance with 3 NICs
 #   ./startvm.sh -n 2  -> launch 2 VMs each with 1 NIC
+#   ./startvm.sh --standalone  -> run in standalone mode
 #
 #
 # Note: When using multiple VMs, it is recommended to set the USE_XTERM
@@ -16,16 +17,32 @@
 dir=$(dirname $0)
 source $dir/env.sh
 
+# Check if running in standalone mode (bypassing setup script)
+STANDALONE_MODE=false
+FILTERED_ARGS=()
+for arg in "$@"; do
+    if [[ "$arg" == "--standalone" ]]; then
+        STANDALONE_MODE=true
+    else
+        FILTERED_ARGS+=("$arg")
+    fi
+done
+
 VIRTME_DIR=$DBS_DIR/virtme
 QEMU_DIR=$DBS_DIR/cassini-qemu/x86_64-softmmu/
 
-SETUP_SCRIPT=$SCRIPT_DIR/startvm-setup.sh
+# Set SETUP_SCRIPT based on mode
+if [[ "$STANDALONE_MODE" == "false" ]]; then
+    SETUP_SCRIPT=$SCRIPT_DIR/startvm-setup.sh
+else
+    SETUP_SCRIPT=$SCRIPT_DIR/startvm-standalone-setup.sh
+fi
 
 # If the emulator is not running, start it. This script must run under
 # its control, so qemu can connect to it. Simply relaunch self under
 # netsim's control.
-if [[ ! -v NETSIM_ID ]]; then
-	exec $DBS_DIR/nic-emu/netsim $@ $0
+if [[ ! -v NETSIM_ID ]] && [[ "$STANDALONE_MODE" == "false" ]]; then
+	exec $DBS_DIR/nic-emu/netsim "${FILTERED_ARGS[@]}" $0
 fi
 
 # Check whether this script is already in a VM or not (ie. running
@@ -94,6 +111,7 @@ if [[ $MOS ]]; then
 	KERN_OPTS="$KERN_OPTS --kopt kernelcore=1024M --kopt lwkcpus=0.1-3 --kopt lwkmem=1G"
 fi
 
+cd $dir
 err=0
 # Start the VM, execute the script inside, and exit ...
 if [[ $RUNCMD ]]; then
