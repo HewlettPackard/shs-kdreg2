@@ -206,6 +206,7 @@ struct kdreg2_context {
 	/* contexts are mapped 1-to-1 to a mm */
 
 	struct mm_struct       *mm;
+	pid_t                  original_pid;
 
 	struct mutex           lock;
 
@@ -414,24 +415,44 @@ static struct kdreg2_monitoring_state _bad_index =
 static __always_inline
 int kdreg2_detect_fork(struct kdreg2_context *context)
 {
-	/* Return error EIO if current->mm != context->mm.
-	 * This will happen in the new process after fork if
-	 * the device file was not opened with O_CLOEXEC.
+	/* Return error EBADF if current process is a child of the original process.
+	 * This specifically detects fork() scenarios where the device file was
+	 * not opened with O_CLOEXEC and got inherited by the child process.
+	 * We only trigger on actual parent-child relationships, not other
+	 * scenarios like fd passing between unrelated processes.
 	 */
 
-	if (current->mm == context->mm)
+	/* Quick check: same process, no fork */
+	if (current->pid == context->original_pid && current->mm == context->mm) {
 		return 0;
+	}
 
-	KDREG2_DEBUG(KDREG2_DEBUG_ALL, 2, "fork detected: %px != %px",
-		     current->mm, context->mm);
+	/* If PID differs, check if current process is a child of the original process */
+	if (current->pid != context->original_pid && current->real_parent &&
+		current->real_parent->pid == context->original_pid) {
+		KDREG2_DEBUG(KDREG2_DEBUG_ALL, 2, "fork detected: parent PID %d, child PID %d",
+		             context->original_pid, current->pid);
+		goto fork_detected;
+	}
 
+	/* Check mm_struct for fork with shared memory initially */
+	if (current->mm != context->mm) {
+		KDREG2_DEBUG(KDREG2_DEBUG_ALL, 2, "fork detected via mm mismatch: %px != %px",
+		             current->mm, context->mm);
+		goto fork_detected;
+	}
+
+	return 0;
+
+fork_detected:
 	if (context->warn_on_fork_detected) {
 		KDREG2_WARN(KDREG2_LOG_RATELIMITED,
-		            "Fork() detected - monitoring not supported in child");
+		            "Fork detected: monitoring not supported in child (PID %d -> %d)",
+		            context->original_pid, current->pid);
 		context->warn_on_fork_detected = false;
 	}
 
-	return -EIO;
+	return -EBADF;  /* Bad file descriptor - fd not valid for child process */
 }
 
 /* **************** kdreg2_class.c **************** */

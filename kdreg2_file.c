@@ -54,18 +54,21 @@ int kdreg2_open(struct inode *inode,
 		     "Context successfully allocated.");
 
 	/* We increment the ref count for mm while setting up the context.
-	 * We can use the value of mm to detect copy-on-exec and fork
-	 * since each process has its own mm.
+	 * We use both mm and original_pid to detect fork scenarios since:
+	 * - Each process has its own mm (detects copy-on-write completion)
+	 * - PID changes immediately on fork (detects parent-child relationships)
 	 */
 
 	context->mm = get_task_mm(current);
+	context->original_pid = current->pid;
 
 	if (!context->mm) {
 		ret = -ENODEV;
 		goto err_with_context;
 	}
 	KDREG2_DEBUG(KDREG2_DEBUG_OPEN, 2,
-		     "Incremented reference to mm 0x%px", context->mm);
+		     "Incremented reference to mm 0x%px, stored original PID %d", 
+		     context->mm, context->original_pid);
 
 	/* initialize the context */
 
