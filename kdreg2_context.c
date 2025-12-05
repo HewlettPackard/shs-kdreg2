@@ -72,44 +72,71 @@ int kdreg2_context_init(struct kdreg2_context *context,
 	init_waitqueue_head(&context->wait_queues.read_queue);
 	init_waitqueue_head(&context->wait_queues.poll_queue);
 
+	/* Initialize deferred invalidation work */
+	INIT_WORK(&context->deferred_invalidation.work, kdreg2_deferred_invalidation_worker);
+	INIT_LIST_HEAD(&context->deferred_invalidation.ranges);
+	spin_lock_init(&context->deferred_invalidation.lock);
+	atomic_set(&context->deferred_invalidation.invalidate_all_pending, 0);
+	
+	/* Create mempool for deferred ranges: 2*max_regions for worst-case. */
+	context->deferred_invalidation.pool = mempool_create_kmalloc_pool(2 * num_entities,
+		                              sizeof(struct kdreg2_deferred_range));
+	if (!context->deferred_invalidation.pool) {
+		ret = -ENOMEM;
+		goto err_with_mmu_notifier;
+	}
+	KDREG2_DEBUG(KDREG2_DEBUG_INIT, 2,
+		     "Created deferred range pool with %zu entries (2x %zu max_regions)",
+		     2 * num_entities, num_entities);
+
 	context->warn_on_fork_detected = true;
 
 	KDREG2_DEBUG(KDREG2_DEBUG_INIT, 1, "Success");
 
 	return 0;
 
-err_with_monitoring_data:
+err_with_mmu_notifier:
+	kdreg2_mmu_notifier_data_destroy(&context->mmu_notifier_data);
 
+err_with_monitoring_data:
 	kdreg2_monitoring_data_destroy(&context->monitoring_data);
 
 err_with_status_data:
-
 	kdreg2_status_destroy(&context->status);
 
 err_with_event_queue:
-
 	kdreg2_event_queue_destroy(&context->event_queue);
 
 err_with_region_db:
-
 	kdreg2_region_db_destroy(&context->region_db);
 
 err:
-
 	KDREG2_WARN(KDREG2_LOG_NORMAL, "Failure: %i", ret);
 	return ret;
 }
 
 void kdreg2_context_destroy(struct kdreg2_context *context)
 {
+	struct kdreg2_deferred_range *range, *tmp;
+
 	/*
 	 * Stop the mmu_notifier from calling us.
+	 * IMPORTANT: Do NOT hold context->lock during mmu_notifier_unregister()
+	 * because it can trigger or wait for callbacks that need to acquire
+	 * the lock (either directly or via deferred work).
 	 */
-
-	kdreg2_context_lock(context);
 
 	kdreg2_mmu_notifier_disable(context);
 	kdreg2_mmu_notifier_data_destroy(&context->mmu_notifier_data);
+
+	/* Wait for any deferred invalidation work to complete.
+	 * This ensures all pending MMU notifier callbacks have been processed
+	 * before we proceed with destroying the regions.
+	 */
+	cancel_work_sync(&context->deferred_invalidation.work);
+
+	/* Now safe to acquire lock for cleanup */
+	kdreg2_context_lock(context);
 
 	/*
 	 * now free any regions associated with the context
@@ -132,6 +159,16 @@ void kdreg2_context_destroy(struct kdreg2_context *context)
 	kdreg2_status_destroy(&context->status);
 
 	kdreg2_context_unlock(context);
+	
+	/* Free any remaining deferred ranges (should be empty after cancel_work_sync above) */
+	list_for_each_entry_safe(range, tmp, &context->deferred_invalidation.ranges, list) {
+		list_del(&range->list);
+		mempool_free(range, context->deferred_invalidation.pool);
+	}
+	
+	/* Destroy the mempool for deferred ranges */
+	mempool_destroy(context->deferred_invalidation.pool);
+	context->deferred_invalidation.pool = NULL;
 }
 
 int kdreg2_context_resize(struct kdreg2_context *context,

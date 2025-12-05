@@ -346,10 +346,10 @@ kdreg2_unmonitor_all(struct kdreg2_context *context)
 }
 
 /*
- * invalidate regions with addresses between start and end (inclusive)
+ * Internal helper: invalidate regions in the given range.
+ * Assumes context lock is already held by the caller.
  */
-
-void
+static void
 kdreg2_destroy_range(struct kdreg2_context *context,
 		     unsigned long start,
 		     unsigned long end)
@@ -360,12 +360,6 @@ kdreg2_destroy_range(struct kdreg2_context *context,
 	unsigned long           last = end - 1;
 	size_t                  num_active_regions;
 	struct kdreg2_region_db_overlap_state   overlap_state;
-
-	KDREG2_DEBUG(KDREG2_DEBUG_REGION, 3,
-		     "Destroy range: start 0x%lx last 0x%lx",
-		     start, last);
-
-	kdreg2_context_lock(context);
 
 	kdreg2_region_db_overlap_state_init(region_db, &overlap_state,
 					    start, last);
@@ -382,10 +376,54 @@ kdreg2_destroy_range(struct kdreg2_context *context,
 		kdreg2_region_free(region_db, region);
 	}
 
-	kdreg2_context_unlock(context);
-
 	KDREG2_DEBUG(KDREG2_DEBUG_REGION, 3,
 		     "%zu regions found to invalidate.", num_found);
+}
+
+/*
+ * Invalidate regions using blocking mutex lock.
+ * Used by worker thread where we can safely block on mutex.
+ */
+static void
+kdreg2_destroy_range_lock(struct kdreg2_context *context,
+		          unsigned long start,
+		          unsigned long end)
+{
+	KDREG2_DEBUG(KDREG2_DEBUG_REGION, 3,
+		     "Destroy range (blocking): start 0x%lx last 0x%lx",
+		     start, end - 1);
+
+	kdreg2_context_lock(context);
+	kdreg2_destroy_range(context, start, end);
+	kdreg2_context_unlock(context);
+}
+
+/*
+ * invalidate regions with addresses between start and end (inclusive)
+ */
+
+void
+kdreg2_destroy_range_trylock(struct kdreg2_context *context,
+		             unsigned long start,
+		             unsigned long end)
+{
+	KDREG2_DEBUG(KDREG2_DEBUG_REGION, 3,
+		     "Destroy range: start 0x%lx last 0x%lx",
+		     start, end - 1);
+
+	/* Try to acquire context lock without blocking to avoid circular dependency
+	 * when called from MMU notifier context. If we can't get the lock,
+	 * defer the work to be processed later in process context.
+	 */
+	if (!mutex_trylock(&context->lock)) {
+		KDREG2_DEBUG(KDREG2_DEBUG_REGION, 3,
+			     "Destroy range: context lock contended, deferring to workqueue");
+		kdreg2_defer_range_invalidation(context, start, end);
+		return;
+	}
+
+	kdreg2_destroy_range(context, start, end);
+	kdreg2_context_unlock(context);
 }
 
 size_t kdreg2_region_db_get_num_regions(struct kdreg2_region_db *region_db)
@@ -903,3 +941,94 @@ kdreg2_region_db_next_overlap(struct kdreg2_region_db_overlap_state *overlap_sta
 }
 
 #endif /* KDREG2_DB_MODE_RBTREE */
+
+/*
+ * Deferred invalidation support
+ */
+
+void kdreg2_defer_range_invalidation(struct kdreg2_context *context,
+				     unsigned long start,
+				     unsigned long end)
+{
+	struct kdreg2_deferred_range *deferred_range;
+	unsigned long flags;
+
+	/* Allocate from mempool with GFP_NOWAIT to avoid blocking in atomic context.
+	 * Pool is sized for worst-case (all regions invalidated), so this should succeed.
+	 * If pool is exhausted, fail immediately rather than blocking/panicking.
+	 */
+	deferred_range = mempool_alloc(context->deferred_invalidation.pool, GFP_NOWAIT);
+	if (unlikely(!deferred_range)) {
+		/* Pool exhausted - fallback: invalidate all regions.
+		 * This is pessimistic but guarantees correctness. Worker will see flag
+		 * and invalidate all regions on next run, ensuring no stale mappings.
+		 */
+		if (!atomic_xchg(&context->deferred_invalidation.invalidate_all_pending, 1)) {
+			KDREG2_WARN(KDREG2_LOG_ONCE,
+				    "Mempool exhausted, triggering invalidate-all fallback. "
+				    "Pool size (%zu entries) insufficient for workload.",
+				    2 * context->region_db.max_regions);
+		}
+		schedule_work(&context->deferred_invalidation.work);
+		return;
+	}
+
+	deferred_range->start = start;
+	deferred_range->end = end;
+
+	spin_lock_irqsave(&context->deferred_invalidation.lock, flags);
+	list_add_tail(&deferred_range->list, &context->deferred_invalidation.ranges);
+	spin_unlock_irqrestore(&context->deferred_invalidation.lock, flags);
+
+	schedule_work(&context->deferred_invalidation.work);
+
+	KDREG2_DEBUG(KDREG2_DEBUG_REGION, 3,
+		     "Deferred range invalidation: start 0x%lx, end 0x%lx", start, end);
+}
+
+void kdreg2_deferred_invalidation_worker(struct work_struct *work)
+{
+	struct kdreg2_context *context = container_of(work, struct kdreg2_context,
+						      deferred_invalidation.work);
+	struct kdreg2_deferred_range *range, *tmp;
+	LIST_HEAD(local_list);
+	unsigned long flags;
+
+	/* Check for invalidate-all condition first */
+	if (atomic_xchg(&context->deferred_invalidation.invalidate_all_pending, 0)) {
+		KDREG2_DEBUG(KDREG2_DEBUG_REGION, 2, "Processing invalidate-all fallback");
+		
+		/* Invalidate all regions using blocking mutex.
+		 * We're in process context so it's safe to block.
+		 */
+		kdreg2_destroy_range_lock(context, 0, ULONG_MAX);
+		
+		/* Clear any queued ranges since we invalidated everything */
+		spin_lock_irqsave(&context->deferred_invalidation.lock, flags);
+		list_splice_init(&context->deferred_invalidation.ranges, &local_list);
+		spin_unlock_irqrestore(&context->deferred_invalidation.lock, flags);
+		list_for_each_entry_safe(range, tmp, &local_list, list) {
+			list_del(&range->list);
+			mempool_free(range, context->deferred_invalidation.pool);
+		}
+		return;
+	}
+
+	/* Move all pending ranges to local list */
+	spin_lock_irqsave(&context->deferred_invalidation.lock, flags);
+	list_splice_init(&context->deferred_invalidation.ranges, &local_list);
+	spin_unlock_irqrestore(&context->deferred_invalidation.lock, flags);
+
+	/* Process each deferred range */
+	list_for_each_entry_safe(range, tmp, &local_list, list) {
+		KDREG2_DEBUG(KDREG2_DEBUG_REGION, 3,
+			     "Processing deferred invalidation: start 0x%lx, end 0x%lx",
+			     range->start, range->end);
+
+		/* Use blocking mutex since we're in process context */
+		kdreg2_destroy_range_lock(context, range->start, range->end);
+
+		list_del(&range->list);
+		mempool_free(range, context->deferred_invalidation.pool);
+	}
+}
