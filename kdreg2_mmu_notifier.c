@@ -43,7 +43,7 @@ kdreg2_invalidate_range_end(struct mmu_notifier *notifier,
 	KDREG2_DEBUG(KDREG2_DEBUG_MMUNOT, 3, "start 0x%lx, end 0x%lx",
 		     range->start, range->end);
 
-	kdreg2_destroy_range(context, range->start, range->end);
+	kdreg2_destroy_range_trylock(context, range->start, range->end);
 }
 
 #elif KDREG2_MMU_NOTIFIER_VERSION == 1
@@ -70,7 +70,7 @@ kdreg2_invalidate_range_end(struct mmu_notifier *notifier,
 	KDREG2_DEBUG(KDREG2_DEBUG_MMUNOT, 3, "start 0x%lx, end 0x%lx",
 		     start, end);
 
-	kdreg2_destroy_range(context, start, end);
+	kdreg2_destroy_range_trylock(context, start, end);
 }
 #else
 #error "KDREG2_MMU_NOTIFIER_VERSION unknown/undefined."

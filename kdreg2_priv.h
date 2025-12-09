@@ -45,6 +45,11 @@
 #include <linux/types.h>
 #include <linux/vmalloc.h>
 #include <linux/sched.h>
+#include <linux/workqueue.h>
+#include <linux/list.h>
+#include <linux/spinlock.h>
+#include <linux/slab.h>
+#include <linux/mempool.h>
 
 #ifdef pr_fmt
 #undef pr_fmt
@@ -197,6 +202,13 @@ struct kdreg2_monitoring_data {
 	struct kdreg2_monitoring_state         *kern_addr;
 };
 
+/* Structure for deferred range invalidation */
+struct kdreg2_deferred_range {
+	struct list_head	list;
+	unsigned long		start;
+	unsigned long		end;
+};
+
 /* Kdreg2 context. Created when /dev/kdreg2 is opened.
  * All threads in process share a mm.  We tie a kdreg2 context to a mm.
  */
@@ -238,6 +250,15 @@ struct kdreg2_context {
 		wait_queue_head_t      read_queue;
 		wait_queue_head_t      poll_queue;
 	} wait_queues;
+
+	/* Deferred range invalidation */
+	struct {
+		struct work_struct	work;
+		struct list_head	ranges;
+		spinlock_t		lock;
+		mempool_t		*pool;  /* Reserve pool for atomic allocations */
+		atomic_t		invalidate_all_pending;  /* Invalidate all if mempool exhausted */
+	} deferred_invalidation;
 
 	/* Warn once about fork() detection. */
 
@@ -633,9 +654,13 @@ ssize_t kdreg2_monitor_region(struct kdreg2_context *context,
 ssize_t kdreg2_unmonitor_region(struct kdreg2_context *context,
 				struct kdreg2_ioctl_unmonitor *unmonitor);
 int kdreg2_unmonitor_all(struct kdreg2_context *context);
-void kdreg2_destroy_range(struct kdreg2_context *context,
-			  unsigned long start,
-			  unsigned long end);
+void kdreg2_destroy_range_trylock(struct kdreg2_context *context,
+			          unsigned long start,
+			          unsigned long end);
+void kdreg2_defer_range_invalidation(struct kdreg2_context *context,
+				     unsigned long start,
+				     unsigned long end);
+void kdreg2_deferred_invalidation_worker(struct work_struct *work);
 
 int kdreg2_region_db_init(struct kdreg2_region_db *region_db,
 			  const size_t num_entities);
