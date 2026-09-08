@@ -23,7 +23,7 @@
 %endif
 
 Name:           kdreg2
-Version:        1.0.1
+Version:        1.0.2
 Release:        %(echo ${BUILD_METADATA})
 Summary:        HPE Kdreg2 kernel memory monitor module
 License:        GPL-2.0
@@ -66,7 +66,8 @@ Development files for Kdreg2 memory monitor
 Summary:        DKMS support for %{name} kernel modules
 Requires: 	dkms
 Requires:	kdreg2
-Conflicts:      %{distro_kernel_package_name}
+Conflicts:      kmod-%{name}
+Conflicts:      %{name}-kmp
 BuildArch: 	noarch
 
 %description dkms
@@ -124,7 +125,8 @@ rm -f %{buildroot}${dkms_source_dir}/dkms.conf.in
 
 %pre dkms
 
-%post dkms
+# DKMS build/install runs in the posttrans scriptlet so the old module is removed first on upgrade.
+%posttrans dkms
 if [ -f /usr/libexec/dkms/common.postinst ] && [ -x /usr/libexec/dkms/common.postinst ]
 then
     postinst=/usr/libexec/dkms/common.postinst
@@ -176,3 +178,6 @@ rm -f %{_modulesloaddir}/%{name}.conf || true
 %files dkms -f dkms-files
 
 %changelog
+* Wed Sep 02 2026 Patrick Bueb <patrick.bueb@hpe.com> 1.0.2
+- Move the DKMS build/install to the posttrans scriptlet so the old module is removed first on upgrade.
+- Standardize kmod/dkms Conflicts.
