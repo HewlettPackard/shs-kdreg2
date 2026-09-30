@@ -92,7 +92,7 @@ done
 
 %install
 export INSTALL_MOD_PATH=$RPM_BUILD_ROOT
-export INSTALL_MOD_DIR=extra
+export INSTALL_MOD_DIR=extra/%{name}
 for flavor in %flavors_to_build; do
     make -C %{kernel_source $flavor} modules_install M=$PWD/obj/$flavor
     install -m 644 -D --target-directory=$RPM_BUILD_ROOT%{prefix}/src/kdreg2/$flavor $PWD/obj/$flavor/Module.symvers
