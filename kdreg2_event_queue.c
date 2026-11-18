@@ -360,7 +360,7 @@ int kdreg2_event_queue_insert(struct kdreg2_context *context,
 
 	kdreg2_status_set_pending_events(&context->status,
 					 event_queue->num_pending);
-	kdreg2_status_inc_total_events(&context->status);
+	kdreg2_status_add_total_events(&context->status, 1);
 
 	KDREG2_DEBUG(KDREG2_DEBUG_MMUNOT, 2,
 		     "Inserted notification into pending buffer cookie %llu.",
@@ -374,6 +374,24 @@ int kdreg2_event_queue_insert(struct kdreg2_context *context,
 int kdreg2_event_queue_flush(struct kdreg2_context *context)
 {
 	struct kdreg2_event_queue *event_queue = &context->event_queue;
+	size_t newly_flushed;
+
+	/*
+	 * The context mutex excludes delivery. Mark the current FIFO prefix
+	 * under region_lock so records retired later still generate events.
+	 */
+	spin_lock(&context->region_lock);
+	newly_flushed = context->deferred_notifications.queued -
+			context->deferred_notifications.flushed;
+	context->deferred_notifications.flushed =
+		context->deferred_notifications.queued;
+	spin_unlock(&context->region_lock);
+
+	/* Match delivery followed by FLUSH, including the ring's overflow limit. */
+	newly_flushed = min(newly_flushed,
+			    event_queue->max_events - event_queue->num_pending);
+	if (newly_flushed)
+		kdreg2_status_add_total_events(&context->status, newly_flushed);
 
 	event_queue->num_pending = 0;
 	event_queue->cons        = 0;

@@ -24,6 +24,9 @@ int kdreg2_context_init(struct kdreg2_context *context,
 	KDREG2_DEBUG(KDREG2_DEBUG_INIT, 1, "Initializing context");
 
 	mutex_init(&context->lock);
+	spin_lock_init(&context->region_lock);
+	atomic_set(&context->active_invalidations, 0);
+	init_waitqueue_head(&context->invalidation_wait);
 
 	/* Initialize the region database */
 
@@ -72,31 +75,17 @@ int kdreg2_context_init(struct kdreg2_context *context,
 	init_waitqueue_head(&context->wait_queues.read_queue);
 	init_waitqueue_head(&context->wait_queues.poll_queue);
 
-	/* Initialize deferred invalidation work */
-	INIT_WORK(&context->deferred_invalidation.work, kdreg2_deferred_invalidation_worker);
-	INIT_LIST_HEAD(&context->deferred_invalidation.ranges);
-	spin_lock_init(&context->deferred_invalidation.lock);
-	atomic_set(&context->deferred_invalidation.invalidate_all_pending, 0);
-	
-	/* Create mempool for deferred ranges: 2*max_regions for worst-case. */
-	context->deferred_invalidation.pool = mempool_create_kmalloc_pool(2 * num_entities,
-		                              sizeof(struct kdreg2_deferred_range));
-	if (!context->deferred_invalidation.pool) {
-		ret = -ENOMEM;
-		goto err_with_mmu_notifier;
-	}
-	KDREG2_DEBUG(KDREG2_DEBUG_INIT, 2,
-		     "Created deferred range pool with %zu entries (2x %zu max_regions)",
-		     2 * num_entities, num_entities);
+	INIT_WORK(&context->deferred_notifications.work,
+		  kdreg2_notification_worker);
+	INIT_LIST_HEAD(&context->deferred_notifications.regions);
+	context->deferred_notifications.queued = 0;
+	context->deferred_notifications.flushed = 0;
 
 	context->warn_on_fork_detected = true;
 
 	KDREG2_DEBUG(KDREG2_DEBUG_INIT, 1, "Success");
 
 	return 0;
-
-err_with_mmu_notifier:
-	kdreg2_mmu_notifier_data_destroy(&context->mmu_notifier_data);
 
 err_with_monitoring_data:
 	kdreg2_monitoring_data_destroy(&context->monitoring_data);
@@ -117,26 +106,22 @@ err:
 
 void kdreg2_context_destroy(struct kdreg2_context *context)
 {
-	struct kdreg2_deferred_range *range, *tmp;
-
 	/*
-	 * Stop the mmu_notifier from calling us.
-	 * IMPORTANT: Do NOT hold context->lock during mmu_notifier_unregister()
-	 * because it can trigger or wait for callbacks that need to acquire
-	 * the lock (either directly or via deferred work).
+	 * Stop callbacks before canceling event delivery. Neither operation
+	 * may run with region_lock held; the worker also needs context->lock.
 	 */
 
 	kdreg2_mmu_notifier_disable(context);
 	kdreg2_mmu_notifier_data_destroy(&context->mmu_notifier_data);
 
-	/* Wait for any deferred invalidation work to complete.
-	 * This ensures all pending MMU notifier callbacks have been processed
-	 * before we proceed with destroying the regions.
+	/* Stop deferred event delivery. Drain any remaining regions under
+	 * the context lock before destroying the region cache.
 	 */
-	cancel_work_sync(&context->deferred_invalidation.work);
+	cancel_work_sync(&context->deferred_notifications.work);
 
 	/* Now safe to acquire lock for cleanup */
 	kdreg2_context_lock(context);
+	kdreg2_deliver_notifications(context);
 
 	/*
 	 * now free any regions associated with the context
@@ -159,16 +144,6 @@ void kdreg2_context_destroy(struct kdreg2_context *context)
 	kdreg2_status_destroy(&context->status);
 
 	kdreg2_context_unlock(context);
-	
-	/* Free any remaining deferred ranges (should be empty after cancel_work_sync above) */
-	list_for_each_entry_safe(range, tmp, &context->deferred_invalidation.ranges, list) {
-		list_del(&range->list);
-		mempool_free(range, context->deferred_invalidation.pool);
-	}
-	
-	/* Destroy the mempool for deferred ranges */
-	mempool_destroy(context->deferred_invalidation.pool);
-	context->deferred_invalidation.pool = NULL;
 }
 
 int kdreg2_context_resize(struct kdreg2_context *context,
@@ -184,6 +159,7 @@ int kdreg2_context_resize(struct kdreg2_context *context,
 	};
 	int ret;
 	size_t i;
+	size_t num_regions;
 
 	KDREG2_INFO(KDREG2_LOG_RATELIMITED, "resize to %zu entities", num_entities);
 
@@ -202,13 +178,28 @@ int kdreg2_context_resize(struct kdreg2_context *context,
 		goto out_unlock;
 	}
 
-	if ((kdreg2_region_db_get_num_regions(region_db) > 0) ||
-	    (kdreg2_event_queue_get_num_pending(event_queue) > 0)) {
+	/*
+	 * Keep notification coverage while any regions are still monitored.
+	 * Only the notifier can remove regions while we hold context->lock.
+	 */
+	spin_lock(&context->region_lock);
+	num_regions = kdreg2_region_db_get_num_regions(region_db);
+	spin_unlock(&context->region_lock);
+	if (num_regions || kdreg2_event_queue_get_num_pending(event_queue)) {
 		ret = -EBUSY;
 		goto error_unlock;
 	}
 
-	/* Resizing triggers mmu notifications.  Disable them. */
+	/*
+	 * With no active watches and the context mutex held, callbacks cannot
+	 * add any more retired records. Drain them before deciding whether to
+	 * unregister, so a busy resize preserves notifier coverage.
+	 */
+	kdreg2_deliver_notifications(context);
+	if (kdreg2_event_queue_get_num_pending(event_queue) > 0) {
+		ret = -EBUSY;
+		goto error_unlock;
+	}
 
 	kdreg2_mmu_notifier_disable(context);
 
