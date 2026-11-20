@@ -17,4 +17,4 @@ fi
 err=$?
 echo "$0 exiting with $err"
 
-exit $?
+exit $err
