@@ -183,7 +183,7 @@ int kdreg2_context_resize(struct kdreg2_context *context,
 		kdreg2_event_queue_resize,
 	};
 	int ret;
-	size_t i, bad_index;
+	size_t i;
 
 	KDREG2_INFO(KDREG2_LOG_RATELIMITED, "resize to %zu entities", num_entities);
 
@@ -216,7 +216,6 @@ int kdreg2_context_resize(struct kdreg2_context *context,
 		ret = (*resizers[i])(context, num_entities);
 		if (!ret)
 			continue;
-		bad_index = i;
 		goto error_rollback;
 	}
 
@@ -228,8 +227,11 @@ int kdreg2_context_resize(struct kdreg2_context *context,
 	 * the notifications.
 	 */
 
-	if (num_entities > 0)
-		kdreg2_mmu_notifier_enable(context);
+	if (num_entities > 0) {
+		ret = kdreg2_mmu_notifier_enable(context);
+		if (ret)
+			goto error_rollback;
+	}
 
 out_unlock:
 
@@ -242,11 +244,13 @@ out_unlock:
 
 error_rollback:
 
-	for (i = 0; i < ARRAY_SIZE(resizers); i++) {
-		if (bad_index == i)
-			continue;
-		(*resizers[i])(context, 0);
-	}
+	/*
+	 * Leave a disabled, empty context without allocating during rollback.
+	 * In particular, recreating the region cache can fail a second time.
+	 */
+	kdreg2_monitoring_data_destroy(&context->monitoring_data);
+	kdreg2_region_db_destroy(region_db);
+	kdreg2_event_queue_destroy(event_queue);
 
 	kdreg2_status_set_max_regions(&context->status, 0);
 	kdreg2_status_set_monitoring_state_base(&context->status, NULL);

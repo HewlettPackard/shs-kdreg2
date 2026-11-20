@@ -99,8 +99,7 @@ static inline size_t dec_num_regions(struct kdreg2_region_db *region_db)
 
 static int create_region_cache(struct kdreg2_region_db *region_db)
 {
-	char     cache_name[64];
-	void     *tmp_region;
+	char cache_name[64];
 
 	/* Create a unique name for this memory cache */
 
@@ -110,19 +109,14 @@ static int create_region_cache(struct kdreg2_region_db *region_db)
 	region_db->region_cache = KDREG2_NAMED_CACHE(cache_name, kdreg2_region,
 						     SLAB_ACCOUNT);
 
-	if (region_db->region_cache) {
-		KDREG2_DEBUG(KDREG2_DEBUG_INIT, 2,
-			     "Created region cache %s", cache_name);
-	} else {
+	if (!region_db->region_cache) {
 		KDREG2_DEBUG(KDREG2_DEBUG_INIT, 1,
 			     "Unable to create region cache %s", cache_name);
 		return -ENOMEM;
 	}
-
-	tmp_region = kmem_cache_alloc(region_db->region_cache, GFP_KERNEL);
-	KDREG2_DEBUG(KDREG2_DEBUG_INIT, 3,
-		     "Region cache allocation size: %zu bytes", ksize(tmp_region));
-	kmem_cache_free(region_db->region_cache, tmp_region);
+	KDREG2_DEBUG(KDREG2_DEBUG_INIT, 2,
+		     "Created region cache %s, object size %zu bytes",
+		     cache_name, sizeof(struct kdreg2_region));
 
 	return 0;
 }
@@ -155,6 +149,16 @@ kdreg2_monitor_region(struct kdreg2_context *context,
 	KDREG2_DEBUG(KDREG2_DEBUG_REGION, 3,
 		     "Add region: addr 0x%px len %zi cookie %llu",
 		     monitor->addr, monitor->length, monitor->cookie);
+
+	/* Context lock makes capacity and cache lifetime stable here. */
+	if (unlikely(!region_db->max_regions)) {
+		ret = -ENOSPC;
+		goto err;
+	}
+	if (unlikely(!region_db->region_cache)) {
+		ret = -ENOMEM;
+		goto err;
+	}
 
 	if (unlikely(region_db_full(region_db))) {
 		if (!region_db->max_regions)
@@ -485,17 +489,18 @@ kdreg2_region_db_init(struct kdreg2_region_db *region_db,
 		     "Creating region database %zu entities",
 		     num_entities);
 
-	region_db->max_regions   = num_entities;
+	region_db->max_regions   = 0;
 	region_db->num_regions   = 0;
 	region_db->num_allocs    = 0;
 	region_db->num_frees     = 0;
 	region_db->cookie_db.biggest_cookie = 0;
 
+	INIT_LIST_HEAD(&region_db->list_db.head);
+
 	ret = create_region_cache(region_db);
 	if (ret)
 		return ret;
-
-	INIT_LIST_HEAD(&region_db->list_db.head);
+	region_db->max_regions = num_entities;
 
 	if (num_entities > 0)
 		KDREG2_DEBUG(KDREG2_DEBUG_INIT, 1,
@@ -513,6 +518,7 @@ kdreg2_region_db_destroy(struct kdreg2_region_db *region_db)
 	if (region_db->max_regions > 0)
 		KDREG2_DEBUG(KDREG2_DEBUG_INIT, 1,
 			     "region_db destroyed");
+	region_db->max_regions = 0;
 }
 
 static struct kdreg2_region *
@@ -768,20 +774,21 @@ kdreg2_region_db_init(struct kdreg2_region_db *region_db,
 	KDREG2_DEBUG(KDREG2_DEBUG_INIT | KDREG2_DEBUG_REGION, 1,
 		     "Creating region database %zu entities", num_entities);
 
-	region_db->max_regions      = num_entities;
+	region_db->max_regions      = 0;
 	region_db->num_regions      = 0;
 	region_db->cookie_tree.root = RB_ROOT;
 	region_db->cookie_tree.biggest_cookie = 0;
-
-	ret = create_region_cache(region_db);
-	if (ret)
-		return ret;
 
 #if KDREG2_HAS_RB_ROOT_CACHED == 0
 	region_db->interval_tree.root = RB_ROOT;
 #else
 	region_db->interval_tree.root = RB_ROOT_CACHED;
 #endif
+
+	ret = create_region_cache(region_db);
+	if (ret)
+		return ret;
+	region_db->max_regions = num_entities;
 
 	if (num_entities > 0)
 		KDREG2_DEBUG(KDREG2_DEBUG_INIT, 1,
@@ -798,6 +805,7 @@ kdreg2_region_db_destroy(struct kdreg2_region_db *region_db)
 	if (region_db->max_regions > 0)
 		KDREG2_DEBUG(KDREG2_DEBUG_INIT, 1,
 			     "region_db destroyed");
+	region_db->max_regions = 0;
 }
 
 int kdreg2_region_db_resize(struct kdreg2_context *context,
