@@ -74,6 +74,30 @@ static void unmonitor(int fd, const struct kdreg2_ioctl_monitor *request)
 	check(ioctl(fd, KDREG2_IOCTL_UNMONITOR, &remove), "unmonitor");
 }
 
+static int test_mapping_changed_bounds(void)
+{
+	struct kdreg2_monitoring_state states[2] = {0};
+	struct kdreg2_status_data status = {0};
+	struct kdreg2_monitoring_params params = {0};
+
+	check(!kdreg2_mapping_changed(&status, &params),
+	      "validity check with zero capacity");
+	status.max_regions = 1;
+	check(!kdreg2_mapping_changed(&status, &params),
+	      "validity check with missing state mapping");
+
+	states[0].u.state.val = states[1].u.state.val = 1;
+	params.generation = 1;
+	status.monitoring_state_base = states;
+	check(kdreg2_mapping_changed(&status, &params),
+	      "validity check within bounds");
+	params.location = status.max_regions;
+	check(!kdreg2_mapping_changed(&status, &params),
+	      "validity check at capacity boundary");
+	printf("Validity bounds: zero capacity, NULL base, and boundary passed\n");
+	return 0;
+}
+
 struct blocked_read {
 	int fd;
 	void *buffer;
@@ -346,7 +370,8 @@ int main(int argc, char **argv)
 		}
 	}
 	alarm(120);
-	failed = test_blocked_read();
+	failed = test_mapping_changed_bounds();
+	failed |= test_blocked_read();
 	failed |= test_flush_notifications();
 	failed |= test_contention(rounds);
 	return failed ? EXIT_FAILURE : EXIT_SUCCESS;

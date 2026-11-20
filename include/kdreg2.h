@@ -325,10 +325,13 @@ bool kdreg2_mapping_changed(const struct kdreg2_status_data *status_data,
 	 * is stale and monitor has been resized.
 	 */
 
-	if (status_data->max_regions < monitoring_params->location)
+	if (monitoring_params->location >= status_data->max_regions)
 		return true;
 
-	ms = status_data->monitoring_state_base + monitoring_params->location;
+	ms = status_data->monitoring_state_base;
+	if (!ms)
+		return true;
+	ms += monitoring_params->location;
 
 	current_generation = *(const volatile typeof(ms->u.state.val) *) &(ms->u.state.val);
 

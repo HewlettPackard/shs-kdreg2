@@ -112,6 +112,11 @@ static int test_capacity_recovery(void)
 	for (i = 0; i < CAPACITY; i++)
 		watches[i] = monitor(fd, page, page_size, i + 1);
 	check(ioctl(fd, KDREG2_IOCTL_UNMONITOR_ALL, 0), "final unmonitor all");
+	config.max_regions = 0;
+	check(ioctl(fd, KDREG2_IOCTL_CONFIG_DATA, &config), "disable capacity");
+	check(!kdreg2_mapping_changed(config.status_data,
+				      &watches[0].monitoring_params),
+	      "validity check after disabling capacity");
 	check(close(fd), "close capacity test");
 	check(munmap(page, page_size), "unmap capacity test");
 	printf("Capacity recovery: watches=%u events=%u\n", CAPACITY, delivered);
