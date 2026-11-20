@@ -331,6 +331,9 @@ kdreg2_unmonitor_all(struct kdreg2_context *context)
 			     region->addr, region->len);
 
 		kdreg2_region_db_remove(region_db, region);
+		dec_num_regions(region_db);
+		kdreg2_monitoring_state_free(context,
+					     region->monitoring_state_index);
 
 		kdreg2_region_free(region_db, region);
 	}

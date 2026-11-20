@@ -43,7 +43,8 @@ TEST_SRC := test_basic.c \
             test_fork2.c \
             test_fork3.c \
             test_threads.c \
-            test_resize.c
+            test_resize.c \
+            test_unmonitor_all.c
 
 MR_SRC := test_mr.c
 
@@ -74,6 +75,12 @@ test_threads.o: test_mr.h
 
 test_threads: test_threads.o $(MR_OBJ)
 	$(CC) $(DEBUG) $^ -o $@ $(LIB)
+
+test_unmonitor_all: test_unmonitor_all.o
+	$(CC) $(CFLAGS) $^ -o $@ $(LIB)
+
+test_unmonitor_all.o: test_unmonitor_all.c kdreg2.h
+	$(CC) $(CFLAGS) -c $<
 
 %.o: %.c
 	$(CC) $(DEBUG) -c $<
