@@ -110,7 +110,7 @@ find $RPM_BUILD_ROOT -iname 'modules.*' -exec rm {} \;
 dkms_source_dir=%{dkms_source_tree}/%{name}-%{version}-%{release}
 mkdir -p %{buildroot}/${dkms_source_dir}
 cp -r source/* %{buildroot}/${dkms_source_dir}
-
+rm -f %{buildroot}/${dkms_source_dir}/GPG_*_PRIVATE_KEY.asc
 echo "%dir ${dkms_source_dir}" > dkms-files
 echo "${dkms_source_dir}" >> dkms-files
 
