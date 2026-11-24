@@ -40,6 +40,7 @@
  */
 
 #include <linux/cdev.h>
+#include <linux/atomic.h>
 #include <linux/mm.h>
 #include <linux/mmu_notifier.h>
 #include <linux/types.h>
@@ -49,7 +50,6 @@
 #include <linux/list.h>
 #include <linux/spinlock.h>
 #include <linux/slab.h>
-#include <linux/mempool.h>
 
 #ifdef pr_fmt
 #undef pr_fmt
@@ -72,15 +72,6 @@ void kdreg2_set_counter(struct kdreg2_counter *counter,
 			uint64_t value)
 {
 	WRITE_ONCE(counter->val, value);
-
-	/* Force synchronization across threads */
-	smp_mb();
-}
-
-static __always_inline
-void kdreg2_inc_counter(struct kdreg2_counter *counter)
-{
-	WRITE_ONCE(counter->val, READ_ONCE(counter->val) + 1);
 
 	/* Force synchronization across threads */
 	smp_mb();
@@ -112,6 +103,7 @@ struct kdreg2_region {
 	size_t                  len;        /* size of space */
 	kdreg2_cookie_t         cookie;
 	size_t                  monitoring_state_index;
+	struct list_head        invalidated_list;
 #if KDREG2_DB_MODE == KDREG2_DB_MODE_DLLIST
 	struct list_head        region_list;
 #elif KDREG2_DB_MODE == KDREG2_DB_MODE_RBTREE
@@ -202,13 +194,6 @@ struct kdreg2_monitoring_data {
 	struct kdreg2_monitoring_state         *kern_addr;
 };
 
-/* Structure for deferred range invalidation */
-struct kdreg2_deferred_range {
-	struct list_head	list;
-	unsigned long		start;
-	unsigned long		end;
-};
-
 /* Kdreg2 context. Created when /dev/kdreg2 is opened.
  * All threads in process share a mm.  We tie a kdreg2 context to a mm.
  */
@@ -221,6 +206,16 @@ struct kdreg2_context {
 	pid_t                  original_pid;
 
 	struct mutex           lock;
+	/*
+	 * Protects the region database, monitoring states and invalidated list.
+	 * Never hold this lock across allocation, user copies or MM operations.
+	 * All callers run in task context; interrupt handlers never take it.
+	 * Other users take lock first; the notifier never waits for lock.
+	 */
+	spinlock_t             region_lock;
+	/* Passes that release region_lock with overlaps still to invalidate. */
+	atomic_t               active_invalidations;
+	wait_queue_head_t      invalidation_wait;
 
 	/* database of regions we monitor */
 
@@ -251,14 +246,17 @@ struct kdreg2_context {
 		wait_queue_head_t      poll_queue;
 	} wait_queues;
 
-	/* Deferred range invalidation */
+	/*
+	 * Invalidated regions retain their slots until cleanup, bounding active
+	 * plus retired records by the configured monitoring capacity.
+	 */
 	struct {
 		struct work_struct	work;
-		struct list_head	ranges;
-		spinlock_t		lock;
-		mempool_t		*pool;  /* Reserve pool for atomic allocations */
-		atomic_t		invalidate_all_pending;  /* Invalidate all if mempool exhausted */
-	} deferred_invalidation;
+		struct list_head	regions;
+		/* region_lock protects the FIFO length and its flushed prefix. */
+		size_t			queued;
+		size_t			flushed;
+	} deferred_notifications;
 
 	/* Warn once about fork() detection. */
 
@@ -623,6 +621,16 @@ uint32_t kdreg2_get_monitoring_state(struct kdreg2_monitoring_state *ms)
 }
 
 static __always_inline
+void kdreg2_monitoring_state_invalidate(struct kdreg2_context *context,
+					const size_t monitoring_state_index)
+{
+	struct kdreg2_monitoring_state *base = context->monitoring_data.kern_addr;
+
+	/* Publish invalidity without returning the slot to the free list. */
+	kdreg2_set_monitoring_state(base + monitoring_state_index, false, 0);
+}
+
+static __always_inline
 void kdreg2_monitoring_state_free(struct kdreg2_context *context,
 				  const size_t monitoring_state_index)
 {
@@ -654,13 +662,10 @@ ssize_t kdreg2_monitor_region(struct kdreg2_context *context,
 ssize_t kdreg2_unmonitor_region(struct kdreg2_context *context,
 				struct kdreg2_ioctl_unmonitor *unmonitor);
 int kdreg2_unmonitor_all(struct kdreg2_context *context);
-void kdreg2_destroy_range_trylock(struct kdreg2_context *context,
-			          unsigned long start,
-			          unsigned long end);
-void kdreg2_defer_range_invalidation(struct kdreg2_context *context,
-				     unsigned long start,
-				     unsigned long end);
-void kdreg2_deferred_invalidation_worker(struct work_struct *work);
+void kdreg2_destroy_range(struct kdreg2_context *context,
+			  unsigned long start, unsigned long end);
+void kdreg2_deliver_notifications(struct kdreg2_context *context);
+void kdreg2_notification_worker(struct work_struct *work);
 
 int kdreg2_region_db_init(struct kdreg2_region_db *region_db,
 			  const size_t num_entities);
@@ -688,9 +693,11 @@ void kdreg2_status_set_pending_events(struct kdreg2_status *status,
 }
 
 static __always_inline
-void kdreg2_status_inc_total_events(struct kdreg2_status *status)
+void kdreg2_status_add_total_events(struct kdreg2_status *status, size_t count)
 {
-	kdreg2_inc_counter(&status->kern_addr->total_events);
+	struct kdreg2_counter *total = &status->kern_addr->total_events;
+
+	kdreg2_set_counter(total, READ_ONCE(total->val) + count);
 }
 
 static __always_inline

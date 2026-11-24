@@ -80,6 +80,11 @@ kdreg2_region_db_next_overlap(struct kdreg2_region_db_overlap_state *overlap_sta
 static void notify_user(struct kdreg2_context *context,
 			struct kdreg2_region *region);
 
+/* Bound each invalidation, cleanup, or bulk-unmonitor critical section. */
+#define KDREG2_REGION_BATCH_SIZE 64
+
+static bool kdreg2_deliver_notification_batch(struct kdreg2_context *context);
+
 static inline bool region_db_full(const struct kdreg2_region_db *region_db)
 {
 	return (region_db->num_regions >= region_db->max_regions);
@@ -99,8 +104,7 @@ static inline size_t dec_num_regions(struct kdreg2_region_db *region_db)
 
 static int create_region_cache(struct kdreg2_region_db *region_db)
 {
-	char     cache_name[64];
-	void     *tmp_region;
+	char cache_name[64];
 
 	/* Create a unique name for this memory cache */
 
@@ -110,19 +114,14 @@ static int create_region_cache(struct kdreg2_region_db *region_db)
 	region_db->region_cache = KDREG2_NAMED_CACHE(cache_name, kdreg2_region,
 						     SLAB_ACCOUNT);
 
-	if (region_db->region_cache) {
-		KDREG2_DEBUG(KDREG2_DEBUG_INIT, 2,
-			     "Created region cache %s", cache_name);
-	} else {
+	if (!region_db->region_cache) {
 		KDREG2_DEBUG(KDREG2_DEBUG_INIT, 1,
 			     "Unable to create region cache %s", cache_name);
 		return -ENOMEM;
 	}
-
-	tmp_region = kmem_cache_alloc(region_db->region_cache, GFP_KERNEL);
-	KDREG2_DEBUG(KDREG2_DEBUG_INIT, 3,
-		     "Region cache allocation size: %zu bytes", ksize(tmp_region));
-	kmem_cache_free(region_db->region_cache, tmp_region);
+	KDREG2_DEBUG(KDREG2_DEBUG_INIT, 2,
+		     "Created region cache %s, object size %zu bytes",
+		     cache_name, sizeof(struct kdreg2_region));
 
 	return 0;
 }
@@ -156,6 +155,18 @@ kdreg2_monitor_region(struct kdreg2_context *context,
 		     "Add region: addr 0x%px len %zi cookie %llu",
 		     monitor->addr, monitor->length, monitor->cookie);
 
+	/* Context lock makes capacity and cache lifetime stable here. */
+	if (unlikely(!region_db->max_regions)) {
+		ret = -ENOSPC;
+		goto err;
+	}
+	if (unlikely(!region_db->region_cache)) {
+		ret = -ENOMEM;
+		goto err;
+	}
+
+	spin_lock(&context->region_lock);
+
 	if (unlikely(region_db_full(region_db))) {
 		if (!region_db->max_regions)
 			KDREG2_WARN(KDREG2_LOG_NORMAL,
@@ -164,16 +175,47 @@ kdreg2_monitor_region(struct kdreg2_context *context,
 			KDREG2_WARN(KDREG2_LOG_RATELIMITED,
 			            "Region database full, rejecting request to monitor region.");
 		ret = -ENOSPC;
-		goto err;
+		goto err_unlock;
 	}
 
-	/* build a new region */
+	monitoring_state_index = find_free_monitoring_state_index(context);
+	spin_unlock(&context->region_lock);
 
+	if (unlikely(monitoring_state_index < 0)) {
+		/*
+		 * Retired watches reserve their slots. Help one cleanup batch
+		 * rather than allocating beyond capacity or waiting for a
+		 * worker that needs the context lock we hold.
+		 */
+		kdreg2_deliver_notification_batch(context);
+		spin_lock(&context->region_lock);
+		monitoring_state_index = find_free_monitoring_state_index(context);
+		spin_unlock(&context->region_lock);
+		if (monitoring_state_index < 0) {
+			ret = -ENOSPC;
+			goto err;
+		}
+	}
+
+	/* Allocation can reclaim memory and invoke the MMU notifier. */
 	region = kdreg2_region_allocate(region_db);
+	spin_lock(&context->region_lock);
 	if (unlikely(!region)) {
-		KDREG2_WARN(KDREG2_LOG_NORMAL, "Unable to allocate region data");
 		ret = -ENOMEM;
-		goto err;
+		goto err_with_monitoring_state;
+	}
+
+	/*
+	 * Invalidation drops region_lock between batches. Preserve the old
+	 * publication ordering so a replacement watch cannot be swept up by
+	 * a later batch. Waiting with the context mutex held is safe: notifier
+	 * callbacks finish invalidating before trying that mutex for cleanup.
+	 */
+	while (atomic_read(&context->active_invalidations)) {
+		spin_unlock(&context->region_lock);
+		wait_event(context->invalidation_wait,
+			   !atomic_read(&context->active_invalidations));
+		spin_lock(&context->region_lock);
 	}
 
 	/* Remember the monitoring_state_index in case it gets overwritten
@@ -181,13 +223,6 @@ kdreg2_monitor_region(struct kdreg2_context *context,
 	 * region is an exact duplicate (addr, length, cookie) of
 	 * a previous monitoring request.
 	 */
-
-	monitoring_state_index = find_free_monitoring_state_index(context);
-
-	if (unlikely(monitoring_state_index < 0)) {
-		ret = -ENOSPC;
-		goto err_with_region;
-	}
 
 	region->addr                   = (unsigned long) monitor->addr;
 	region->last                   = region->addr + monitor->length - 1;
@@ -217,6 +252,7 @@ kdreg2_monitor_region(struct kdreg2_context *context,
 			     region, monitor->monitoring_params.location,
 			     monitor->monitoring_params.generation);
 		kdreg2_monitoring_state_free(context, monitoring_state_index);
+		spin_unlock(&context->region_lock);
 		kdreg2_region_free(region_db, region);
 		return 0;
 	default:
@@ -235,15 +271,20 @@ kdreg2_monitor_region(struct kdreg2_context *context,
 		     region, monitor->monitoring_params.location,
 		     monitor->monitoring_params.generation);
 
+	kdreg2_status_set_num_active_regions(&context->status,
+					     region_db->num_regions);
+	spin_unlock(&context->region_lock);
+
 	return 0;               /* success */
 
 err_with_monitoring_state:
 
 	kdreg2_monitoring_state_free(context, monitoring_state_index);
 
-err_with_region:
-
-	kdreg2_region_free(region_db, region);
+err_unlock:
+	spin_unlock(&context->region_lock);
+	if (region)
+		kdreg2_region_free(region_db, region);
 
 err:
 
@@ -268,12 +309,14 @@ kdreg2_unmonitor_region(struct kdreg2_context *context,
 	KDREG2_DEBUG(KDREG2_DEBUG_REGION, 3, "Remove region: cookie %llu",
 		     unmonitor->cookie);
 
+	spin_lock(&context->region_lock);
 	region = kdreg2_region_db_find_by_cookie(region_db, unmonitor->cookie);
 
 	if (!region) {
 		KDREG2_DEBUG(KDREG2_DEBUG_REGION, 3,
 			     "Unable to find region with cookie %llu",
 			     unmonitor->cookie);
+		spin_unlock(&context->region_lock);
 		return 0;
 	}
 
@@ -293,6 +336,7 @@ kdreg2_unmonitor_region(struct kdreg2_context *context,
 			     "monitoring_location %lu",
 			     unmonitor->cookie,
 			     unmonitor->monitoring_params.location);
+		spin_unlock(&context->region_lock);
 		return -EBADSLT;
 	}
 
@@ -300,6 +344,9 @@ kdreg2_unmonitor_region(struct kdreg2_context *context,
 	dec_num_regions(region_db);
 
 	kdreg2_monitoring_state_free(context, region->monitoring_state_index);
+	kdreg2_status_set_num_active_regions(&context->status,
+					     region_db->num_regions);
+	spin_unlock(&context->region_lock);
 	kdreg2_region_free(region_db, region);
 
 	KDREG2_DEBUG(KDREG2_DEBUG_REGION, 3,
@@ -318,22 +365,39 @@ kdreg2_unmonitor_all(struct kdreg2_context *context)
 {
 	struct kdreg2_region_db   *region_db = &context->region_db;
 	struct kdreg2_region      *region;
+	struct kdreg2_region      *tmp;
 	struct kdreg2_region_db_overlap_state   overlap_state;
 	size_t num_found = 0;
+	size_t batch_size;
+	LIST_HEAD(removed);
 
-	kdreg2_region_db_overlap_state_init(region_db, &overlap_state, 0, ~0);
+	do {
+		batch_size = 0;
+		spin_lock(&context->region_lock);
+		/* Concurrent callbacks may remove watches between batches. */
+		kdreg2_region_db_overlap_state_init(region_db, &overlap_state, 0, ~0);
 
-	while (NULL != (region = kdreg2_region_db_next_overlap(&overlap_state))) {
+		while (batch_size < KDREG2_REGION_BATCH_SIZE &&
+		       (region = kdreg2_region_db_next_overlap(&overlap_state))) {
+			batch_size++;
+			num_found++;
+			kdreg2_region_db_remove(region_db, region);
+			dec_num_regions(region_db);
+			kdreg2_monitoring_state_free(context,
+						     region->monitoring_state_index);
+			list_add_tail(&region->invalidated_list, &removed);
+		}
 
-		num_found++;
-		KDREG2_DEBUG(KDREG2_DEBUG_REGION, 3,
-			     "Unmonitor region: addr 0x%lx, len %lx",
-			     region->addr, region->len);
+		kdreg2_status_set_num_active_regions(&context->status,
+						     region_db->num_regions);
+		spin_unlock(&context->region_lock);
 
-		kdreg2_region_db_remove(region_db, region);
-
-		kdreg2_region_free(region_db, region);
-	}
+		list_for_each_entry_safe(region, tmp, &removed, invalidated_list) {
+			list_del(&region->invalidated_list);
+			kdreg2_region_free(region_db, region);
+		}
+		cond_resched();
+	} while (batch_size == KDREG2_REGION_BATCH_SIZE);
 
 	if (num_found)
 		KDREG2_DEBUG(KDREG2_DEBUG_IOCTL, 2,
@@ -346,10 +410,11 @@ kdreg2_unmonitor_all(struct kdreg2_context *context)
 }
 
 /*
- * Internal helper: invalidate regions in the given range.
- * Assumes context lock is already held by the caller.
+ * Invalidate [start, end) before returning to the MMU notifier. Only event
+ * delivery and freeing are deferred. Keeping the removed region itself
+ * prevents a later worker from invalidating a new mapping at the same address.
  */
-static void
+void
 kdreg2_destroy_range(struct kdreg2_context *context,
 		     unsigned long start,
 		     unsigned long end)
@@ -357,73 +422,68 @@ kdreg2_destroy_range(struct kdreg2_context *context,
 	struct kdreg2_region_db *region_db = &context->region_db;
 	struct kdreg2_region    *region;
 	size_t                  num_found = 0;
+	size_t                  batch_size;
 	unsigned long           last = end - 1;
-	size_t                  num_active_regions;
+	bool multi_batch = false;
+	bool more;
 	struct kdreg2_region_db_overlap_state   overlap_state;
 
-	kdreg2_region_db_overlap_state_init(region_db, &overlap_state,
-					    start, last);
+	spin_lock(&context->region_lock);
+	for (;;) {
+		/* Other callbacks or UNMONITOR can remove entries between batches. */
+		kdreg2_region_db_overlap_state_init(region_db, &overlap_state,
+						    start, last);
+		region = kdreg2_region_db_next_overlap(&overlap_state);
+		if (!region)
+			break;
 
-	while (NULL != (region = kdreg2_region_db_next_overlap(&overlap_state))) {
-		num_found++;
-		num_active_regions = dec_num_regions(region_db);
-		kdreg2_region_db_remove(region_db, region);
-		notify_user(context, region);
+		for (batch_size = 0; region && batch_size < KDREG2_REGION_BATCH_SIZE;
+		     batch_size++) {
+			dec_num_regions(region_db);
+			kdreg2_region_db_remove(region_db, region);
+			kdreg2_monitoring_state_invalidate(context,
+							   region->monitoring_state_index);
+			list_add_tail(&region->invalidated_list,
+				      &context->deferred_notifications.regions);
+			region = kdreg2_region_db_next_overlap(&overlap_state);
+		}
+		num_found += batch_size;
+		context->deferred_notifications.queued += batch_size;
 		kdreg2_status_set_num_active_regions(&context->status,
-						     num_active_regions);
-		kdreg2_monitoring_state_free(context,
-					     region->monitoring_state_index);
-		kdreg2_region_free(region_db, region);
+						     region_db->num_regions);
+		if (!region)
+			break;
+
+		/*
+		 * A later batch must not sweep up a replacement watch. A pass
+		 * that fits under one lock acquisition never blocks publication
+		 * after dropping the lock.
+		 */
+		if (!multi_batch) {
+			atomic_inc(&context->active_invalidations);
+			multi_batch = true;
+		}
+		spin_unlock(&context->region_lock);
+		spin_lock(&context->region_lock);
 	}
+	if (multi_batch && atomic_dec_and_test(&context->active_invalidations))
+		wake_up_all(&context->invalidation_wait);
+	spin_unlock(&context->region_lock);
+	if (!num_found)
+		return;
 
 	KDREG2_DEBUG(KDREG2_DEBUG_REGION, 3,
 		     "%zu regions found to invalidate.", num_found);
-}
 
-/*
- * Invalidate regions using blocking mutex lock.
- * Used by worker thread where we can safely block on mutex.
- */
-static void
-kdreg2_destroy_range_lock(struct kdreg2_context *context,
-		          unsigned long start,
-		          unsigned long end)
-{
-	KDREG2_DEBUG(KDREG2_DEBUG_REGION, 3,
-		     "Destroy range (blocking): start 0x%lx last 0x%lx",
-		     start, end - 1);
+	/* User copies can fault while holding lock. Never wait for it here. */
+	if (mutex_trylock(&context->lock)) {
+		more = kdreg2_deliver_notification_batch(context);
+		kdreg2_context_unlock(context);
+	} else
+		more = true;
 
-	kdreg2_context_lock(context);
-	kdreg2_destroy_range(context, start, end);
-	kdreg2_context_unlock(context);
-}
-
-/*
- * invalidate regions with addresses between start and end (inclusive)
- */
-
-void
-kdreg2_destroy_range_trylock(struct kdreg2_context *context,
-		             unsigned long start,
-		             unsigned long end)
-{
-	KDREG2_DEBUG(KDREG2_DEBUG_REGION, 3,
-		     "Destroy range: start 0x%lx last 0x%lx",
-		     start, end - 1);
-
-	/* Try to acquire context lock without blocking to avoid circular dependency
-	 * when called from MMU notifier context. If we can't get the lock,
-	 * defer the work to be processed later in process context.
-	 */
-	if (!mutex_trylock(&context->lock)) {
-		KDREG2_DEBUG(KDREG2_DEBUG_REGION, 3,
-			     "Destroy range: context lock contended, deferring to workqueue");
-		kdreg2_defer_range_invalidation(context, start, end);
-		return;
-	}
-
-	kdreg2_destroy_range(context, start, end);
-	kdreg2_context_unlock(context);
+	if (more)
+		schedule_work(&context->deferred_notifications.work);
 }
 
 size_t kdreg2_region_db_get_num_regions(struct kdreg2_region_db *region_db)
@@ -482,17 +542,18 @@ kdreg2_region_db_init(struct kdreg2_region_db *region_db,
 		     "Creating region database %zu entities",
 		     num_entities);
 
-	region_db->max_regions   = num_entities;
+	region_db->max_regions   = 0;
 	region_db->num_regions   = 0;
 	region_db->num_allocs    = 0;
 	region_db->num_frees     = 0;
 	region_db->cookie_db.biggest_cookie = 0;
 
+	INIT_LIST_HEAD(&region_db->list_db.head);
+
 	ret = create_region_cache(region_db);
 	if (ret)
 		return ret;
-
-	INIT_LIST_HEAD(&region_db->list_db.head);
+	region_db->max_regions = num_entities;
 
 	if (num_entities > 0)
 		KDREG2_DEBUG(KDREG2_DEBUG_INIT, 1,
@@ -510,6 +571,7 @@ kdreg2_region_db_destroy(struct kdreg2_region_db *region_db)
 	if (region_db->max_regions > 0)
 		KDREG2_DEBUG(KDREG2_DEBUG_INIT, 1,
 			     "region_db destroyed");
+	region_db->max_regions = 0;
 }
 
 static struct kdreg2_region *
@@ -765,20 +827,21 @@ kdreg2_region_db_init(struct kdreg2_region_db *region_db,
 	KDREG2_DEBUG(KDREG2_DEBUG_INIT | KDREG2_DEBUG_REGION, 1,
 		     "Creating region database %zu entities", num_entities);
 
-	region_db->max_regions      = num_entities;
+	region_db->max_regions      = 0;
 	region_db->num_regions      = 0;
 	region_db->cookie_tree.root = RB_ROOT;
 	region_db->cookie_tree.biggest_cookie = 0;
-
-	ret = create_region_cache(region_db);
-	if (ret)
-		return ret;
 
 #if KDREG2_HAS_RB_ROOT_CACHED == 0
 	region_db->interval_tree.root = RB_ROOT;
 #else
 	region_db->interval_tree.root = RB_ROOT_CACHED;
 #endif
+
+	ret = create_region_cache(region_db);
+	if (ret)
+		return ret;
+	region_db->max_regions = num_entities;
 
 	if (num_entities > 0)
 		KDREG2_DEBUG(KDREG2_DEBUG_INIT, 1,
@@ -795,6 +858,7 @@ kdreg2_region_db_destroy(struct kdreg2_region_db *region_db)
 	if (region_db->max_regions > 0)
 		KDREG2_DEBUG(KDREG2_DEBUG_INIT, 1,
 			     "region_db destroyed");
+	region_db->max_regions = 0;
 }
 
 int kdreg2_region_db_resize(struct kdreg2_context *context,
@@ -942,93 +1006,64 @@ kdreg2_region_db_next_overlap(struct kdreg2_region_db_overlap_state *overlap_sta
 
 #endif /* KDREG2_DB_MODE_RBTREE */
 
-/*
- * Deferred invalidation support
- */
-
-void kdreg2_defer_range_invalidation(struct kdreg2_context *context,
-				     unsigned long start,
-				     unsigned long end)
+/* Called with context->lock held, without region_lock. Never sleeps. */
+static bool kdreg2_deliver_notification_batch(struct kdreg2_context *context)
 {
-	struct kdreg2_deferred_range *deferred_range;
-	unsigned long flags;
+	struct kdreg2_region *region, *tmp;
+	size_t count = 0, flushed;
+	bool more;
+	LIST_HEAD(regions);
 
-	/* Allocate from mempool with GFP_NOWAIT to avoid blocking in atomic context.
-	 * Pool is sized for worst-case (all regions invalidated), so this should succeed.
-	 * If pool is exhausted, fail immediately rather than blocking/panicking.
+	spin_lock(&context->region_lock);
+	while (count < KDREG2_REGION_BATCH_SIZE &&
+	       !list_empty(&context->deferred_notifications.regions)) {
+		region = list_first_entry(&context->deferred_notifications.regions,
+					  struct kdreg2_region, invalidated_list);
+		list_move_tail(&region->invalidated_list, &regions);
+		kdreg2_monitoring_state_free(context, region->monitoring_state_index);
+		count++;
+	}
+	flushed = min(count, context->deferred_notifications.flushed);
+	context->deferred_notifications.flushed -= flushed;
+	context->deferred_notifications.queued -= count;
+	spin_unlock(&context->region_lock);
+
+	/*
+	 * Finish freeing every detached record before dropping context->lock.
+	 * Resize and close may destroy the slab once they acquire that lock.
 	 */
-	deferred_range = mempool_alloc(context->deferred_invalidation.pool, GFP_NOWAIT);
-	if (unlikely(!deferred_range)) {
-		/* Pool exhausted - fallback: invalidate all regions.
-		 * This is pessimistic but guarantees correctness. Worker will see flag
-		 * and invalidate all regions on next run, ensuring no stale mappings.
-		 */
-		if (!atomic_xchg(&context->deferred_invalidation.invalidate_all_pending, 1)) {
-			KDREG2_WARN(KDREG2_LOG_ONCE,
-				    "Mempool exhausted, triggering invalidate-all fallback. "
-				    "Pool size (%zu entries) insufficient for workload.",
-				    2 * context->region_db.max_regions);
-		}
-		schedule_work(&context->deferred_invalidation.work);
-		return;
+	list_for_each_entry_safe(region, tmp, &regions, invalidated_list) {
+		list_del(&region->invalidated_list);
+		if (flushed)
+			flushed--;
+		else
+			notify_user(context, region);
+		kdreg2_region_free(&context->region_db, region);
 	}
 
-	deferred_range->start = start;
-	deferred_range->end = end;
-
-	spin_lock_irqsave(&context->deferred_invalidation.lock, flags);
-	list_add_tail(&deferred_range->list, &context->deferred_invalidation.ranges);
-	spin_unlock_irqrestore(&context->deferred_invalidation.lock, flags);
-
-	schedule_work(&context->deferred_invalidation.work);
-
-	KDREG2_DEBUG(KDREG2_DEBUG_REGION, 3,
-		     "Deferred range invalidation: start 0x%lx, end 0x%lx", start, end);
+	spin_lock(&context->region_lock);
+	more = !list_empty(&context->deferred_notifications.regions);
+	spin_unlock(&context->region_lock);
+	return more;
 }
 
-void kdreg2_deferred_invalidation_worker(struct work_struct *work)
+/* Lifecycle operations have quiesced callbacks and must drain everything. */
+void kdreg2_deliver_notifications(struct kdreg2_context *context)
+{
+	while (kdreg2_deliver_notification_batch(context))
+		cond_resched();
+}
+
+void kdreg2_notification_worker(struct work_struct *work)
 {
 	struct kdreg2_context *context = container_of(work, struct kdreg2_context,
-						      deferred_invalidation.work);
-	struct kdreg2_deferred_range *range, *tmp;
-	LIST_HEAD(local_list);
-	unsigned long flags;
+						      deferred_notifications.work);
+	bool more;
 
-	/* Check for invalidate-all condition first */
-	if (atomic_xchg(&context->deferred_invalidation.invalidate_all_pending, 0)) {
-		KDREG2_DEBUG(KDREG2_DEBUG_REGION, 2, "Processing invalidate-all fallback");
-		
-		/* Invalidate all regions using blocking mutex.
-		 * We're in process context so it's safe to block.
-		 */
-		kdreg2_destroy_range_lock(context, 0, ULONG_MAX);
-		
-		/* Clear any queued ranges since we invalidated everything */
-		spin_lock_irqsave(&context->deferred_invalidation.lock, flags);
-		list_splice_init(&context->deferred_invalidation.ranges, &local_list);
-		spin_unlock_irqrestore(&context->deferred_invalidation.lock, flags);
-		list_for_each_entry_safe(range, tmp, &local_list, list) {
-			list_del(&range->list);
-			mempool_free(range, context->deferred_invalidation.pool);
-		}
-		return;
-	}
-
-	/* Move all pending ranges to local list */
-	spin_lock_irqsave(&context->deferred_invalidation.lock, flags);
-	list_splice_init(&context->deferred_invalidation.ranges, &local_list);
-	spin_unlock_irqrestore(&context->deferred_invalidation.lock, flags);
-
-	/* Process each deferred range */
-	list_for_each_entry_safe(range, tmp, &local_list, list) {
-		KDREG2_DEBUG(KDREG2_DEBUG_REGION, 3,
-			     "Processing deferred invalidation: start 0x%lx, end 0x%lx",
-			     range->start, range->end);
-
-		/* Use blocking mutex since we're in process context */
-		kdreg2_destroy_range_lock(context, range->start, range->end);
-
-		list_del(&range->list);
-		mempool_free(range, context->deferred_invalidation.pool);
-	}
+	do {
+		kdreg2_context_lock(context);
+		more = kdreg2_deliver_notification_batch(context);
+		kdreg2_context_unlock(context);
+		cond_resched();
+	} while (more);
 }

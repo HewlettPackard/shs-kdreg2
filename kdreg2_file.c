@@ -294,8 +294,6 @@ static long ioctl_monitor(struct kdreg2_context *context,
 {
 	struct kdreg2_ioctl_monitor   monitor;
 	struct kdreg2_ioctl_unmonitor unmonitor;
-	struct kdreg2_region_db       *region_db = &context->region_db;
-	uint64_t num_active_regions;
 	int ret;
 
 	if (copy_from_user(&monitor, (void __user *) arg, sizeof(monitor)))
@@ -324,12 +322,6 @@ static long ioctl_monitor(struct kdreg2_context *context,
 		goto unmonitor;
 	}
 
-	/* the number of regions should only change on success */
-
-	num_active_regions = kdreg2_region_db_get_num_regions(region_db);
-	kdreg2_status_set_num_active_regions(&context->status,
-					     num_active_regions);
-
 	kdreg2_context_unlock(context);
 
 	return 0;
@@ -349,29 +341,24 @@ unlock_return:
 static long ioctl_unmonitor(struct kdreg2_context *context,
 			    unsigned long arg)
 {
-	struct kdreg2_region_db         *region_db = &context->region_db;
 	struct kdreg2_ioctl_unmonitor   unmonitor;
-	uint64_t num_active_regions;
 	int ret;
 
 	if (copy_from_user(&unmonitor, (void __user *) arg,
 			   sizeof(unmonitor)))
 		return -EFAULT;
 
+	kdreg2_context_lock(context);
+
 	if (unmonitor.monitoring_params.location >=
 	    kdreg2_get_num_monitoring_state(&context->monitoring_data)) {
-		return -EINVAL;
-	};
-
-	kdreg2_context_lock(context);
+		ret = -EINVAL;
+		goto unlock_return;
+	}
 
 	ret = kdreg2_unmonitor_region(context, &unmonitor);
 	if (ret)
 		goto unlock_return;
-
-	num_active_regions = kdreg2_region_db_get_num_regions(region_db);
-	kdreg2_status_set_num_active_regions(&context->status,
-					     num_active_regions);
 
 	kdreg2_context_unlock(context);
 
@@ -386,17 +373,11 @@ unlock_return:
 static long ioctl_unmonitor_all(struct kdreg2_context *context,
 				unsigned long arg)   /* unused */
 {
-	struct kdreg2_region_db         *region_db = &context->region_db;
-	size_t num_active_regions;
 	int ret;
 
 	kdreg2_context_lock(context);
 
 	ret = kdreg2_unmonitor_all(context);
-
-	num_active_regions = kdreg2_region_db_get_num_regions(region_db);
-	kdreg2_status_set_num_active_regions(&context->status,
-					     num_active_regions);
 
 	kdreg2_context_unlock(context);
 	return ret;

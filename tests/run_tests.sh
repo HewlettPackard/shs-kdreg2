@@ -10,11 +10,16 @@ TEST_RESULTS=$TEST_DIR/unit_tests.tap
 tests=$(make -C $TEST_DIR --silent --no-print-directory echo_tests)
 err=$?
 
-if [[ $err -ne 0 ]] || [[ -z $tests ]]
+if [[ $err -ne 0 ]]
 then
     echo "Unable to get list of tests to execute: $err"
     echo "$0 exiting with $err"
     exit $err
+fi
+
+if [[ -z $tests ]]; then
+    echo "No tests to execute."
+    exit 1
 fi
 
 n=$(echo "$tests" | wc -w)
@@ -40,6 +45,10 @@ done
 
 echo "$num_errors errors encountered while running $n unit tests."
 
+err=0
+if ((num_errors)); then
+    err=1
+fi
 echo "$(basename $0) exiting with $err"
 
 exit $err
