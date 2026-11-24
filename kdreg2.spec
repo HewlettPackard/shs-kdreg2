@@ -2,6 +2,7 @@
 %define release_extra SHS11.0.0
 
 %{!?dkms_source_tree:%define dkms_source_tree /usr/src}
+%{!?_modulesloaddir:%define _modulesloaddir /usr/lib/modules-load.d}
 
 %if 0%{?rhel}
 %define distro_kernel_package_name kmod-%{name}
@@ -22,6 +23,15 @@
 %define kmp_args %kmp_args_common
 %endif
 
+# Scriptlet fragment for the base package: write the modules-load.d entry if it
+# is missing.
+%define restore_modules_load_entry \
+if [ ! -e %{_modulesloaddir}/%{name}.conf ]; then \
+    mkdir -p %{_modulesloaddir} \
+    echo %{name} > %{_modulesloaddir}/%{name}.conf \
+    chmod 644 %{_modulesloaddir}/%{name}.conf \
+fi
+
 Name:           kdreg2
 Version:        1.0.2
 Release:        %(echo ${BUILD_METADATA})
@@ -29,6 +39,10 @@ Summary:        HPE Kdreg2 kernel memory monitor module
 License:        GPL-2.0
 Source0:        %{name}-%{version}.tar.gz
 Prefix:         /usr
+
+# Marks a base package that owns the modules-load.d entry and restores it
+# after the scriptlets of older packages have deleted it.
+Provides:       %{name}(modules-load)
 
 BuildRequires:  %kernel_module_package_buildreqs
 
@@ -66,6 +80,7 @@ Development files for Kdreg2 memory monitor
 Summary:        DKMS support for %{name} kernel modules
 Requires: 	dkms
 Requires:	kdreg2
+Requires:	%{name}(modules-load)
 Conflicts:      kmod-%{name}
 Conflicts:      %{name}-kmp
 BuildArch: 	noarch
@@ -99,6 +114,11 @@ for flavor in %flavors_to_build; do
 done
 
 install -m 644 -D --target-directory=%{buildroot}%{_includedir}/linux source/include/kdreg2.h
+
+# systemd modules-load.d entry: load the module at boot
+install -d %{buildroot}%{_modulesloaddir}
+echo %{name} > %{buildroot}%{_modulesloaddir}/%{name}.conf
+chmod 644 %{buildroot}%{_modulesloaddir}/%{name}.conf
 
 %if 0%{?rhel}
 # Centos/Rocky/RHEL does not exclude the depmod-generated modules.* files from
@@ -149,27 +169,26 @@ ${postinst} %{name} %{version}-%{release}
 # from being removed.
 #
 /usr/sbin/dkms remove -m %{name} -v %{version}-%{release} --all --rpm_safe_upgrade || true
-rm -f %{_modulesloaddir}/%{name}.conf || true
 
-%post
-# create module directory if necessary
-if [ ! -d %{_modulesloaddir} ]
-then
-	mkdir -p %{_modulesloaddir}
+%triggerpostun -- %{name}
+# Another instance of this package was removed and one remains: an upgrade
+# from an older package, whose scriptlet has deleted the entry, or a downgrade
+# to one, which does not own the entry, so that rpm has removed it.
+if [ $2 -ge 1 ]; then
+%restore_modules_load_entry
 fi
 
-# Create the systemd load file
-if [ ! -f %{_modulesloaddir}/%{name}.conf ]
-then
-    echo %{name} > %{_modulesloaddir}/%{name}.conf
-    chmod 644 %{_modulesloaddir}/%{name}.conf
-fi
+%triggerpostun -- %{name}-dkms
+# An older dkms package was replaced or erased while this package is installed.
+%restore_modules_load_entry
 
-%preun
-rm -f %{_modulesloaddir}/%{name}.conf || true
-
+%posttrans
+# Covers a transaction that ran the scriptlets of older packages without triggers.
+%restore_modules_load_entry
 
 %files
+# The entry is rewritten, with a new mtime, after an upgrade from an older package.
+%verify(not mtime) %{_modulesloaddir}/%{name}.conf
 
 %files devel
 %{_includedir}/linux/kdreg2.h
@@ -178,6 +197,9 @@ rm -f %{_modulesloaddir}/%{name}.conf || true
 %files dkms -f dkms-files
 
 %changelog
+* Tue Nov 24 2026 John Heemstra <john.heemstra@hpe.com> 1.0.2
+- Ship the modules-load.d entry as a file of the base package and keep it across upgrades.
+- Do not delete the modules-load.d entry when the dkms package is upgraded or erased.
 * Wed Sep 02 2026 Patrick Bueb <patrick.bueb@hpe.com> 1.0.2
 - Move the DKMS build/install to the posttrans scriptlet so the old module is removed first on upgrade.
 - Standardize kmod/dkms Conflicts.
