@@ -4,6 +4,12 @@
 %{!?dkms_source_tree:%define dkms_source_tree /usr/src}
 %{!?_modulesloaddir:%define _modulesloaddir /usr/lib/modules-load.d}
 
+# On SUSE, rpm generates the requirement "(kmod(kdreg2.ko) if kernel)" from a
+# packaged modules-load.d entry. Only the KMP provides kmod(kdreg2.ko), and
+# the dkms package conflicts with the KMP, so the base package could not be
+# installed with the dkms package on a system that has a kernel installed.
+%global __requires_exclude_from %{?__requires_exclude_from:%{__requires_exclude_from}|}^%{_modulesloaddir}/
+
 %if 0%{?rhel}
 %define distro_kernel_package_name kmod-%{name}
 %else
@@ -197,6 +203,8 @@ fi
 %files dkms -f dkms-files
 
 %changelog
+* Wed Nov 25 2026 John Heemstra <john.heemstra@hpe.com> 1.0.2
+- Do not generate a kmod requirement from the modules-load.d entry; the dkms package cannot satisfy it.
 * Tue Nov 24 2026 John Heemstra <john.heemstra@hpe.com> 1.0.2
 - Ship the modules-load.d entry as a file of the base package and keep it across upgrades.
 - Do not delete the modules-load.d entry when the dkms package is upgraded or erased.
